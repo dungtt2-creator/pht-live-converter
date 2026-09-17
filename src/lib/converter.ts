@@ -1,12 +1,17 @@
 /**
  * Converter: chuyển DOM document.xml đã parse thành PHT hoặc Live.
  *
- * PHT  (Phiếu học tập):  giữ mục tiêu + lý thuyết (blank hóa định nghĩa) + câu hỏi.
- *                        Xóa: "Đáp án:", "Hướng dẫn:", "Lời giải:", bảng giải thích.
- * Live (Tài liệu Live): giữ nguyên 100% nội dung GV (không blank, không xóa kiến thức).
+ * PHT (Phiếu học tập): giữ mục tiêu + lý thuyết (blank hóa định nghĩa) + câu hỏi.
+ *     Xóa: khối "Đáp án/Hướng dẫn/Lời giải" + nội dung giải, bảng giải thích.
+ * Live (Tài liệu Live, theo mẫu kỳ thi):
+ *     1) Trang NGANG (16840x11907, margin 720) — đúng template.
+ *     2) Xóa mọi highlight (đánh dấu màu đáp án của GV).
+ *     3) Xóa đáp án + hướng dẫn giải (cùng logic PHT).
+ *     4) Gom câu hỏi vào BẢNG 2 cột viền đỏ C00000: trái = câu hỏi, phải = dòng kẻ
+ *        để giáo viên viết khi chữa bài.
  *
- * Nguyên tắc bất biến: không sửa nội dung kiến thức; chỉ xóa/che phần đáp án (PHT)
- * và thêm cấu trúc hỗ trợ giảng dạy (Live).
+ * Nguyên tắc bất biến: không sửa nội dung kiến thức; chỉ xóa đáp án/đánh dấu
+ * và thêm cấu trúc hỗ trợ.
  */
 
 import { localName, childrenOf, isW, paragraphText, createWElement } from "./xml";
@@ -25,22 +30,13 @@ export interface ConvertResult {
 }
 
 const QNUM = /^[Cc]âu\s*(\d+)\s*[.:]/;
-
-function isQuestionPara(p: XElement): boolean {
-  return QNUM.test(paragraphText(p).trim());
-}
-
-/** Bảng câu hỏi đúng/sai (cột Đúng/Sai) hoặc bảng giải thích (cột Đ/A) */
-function isAnswerTable(tbl: XElement): boolean {
-  const trs = childrenOf(tbl).filter((c) => isW(c, "tr"));
-  if (!trs.length) return false;
-  const first = childrenOf(trs[0]).filter((c) => isW(c, "tc"));
-  const headerText = first.map((tc) => {
-    const p = childrenOf(tc).find((c) => isW(c, "p"));
-    return p ? paragraphText(p) : "";
-  }).join(" ");
-  return /Đ\/A|Giải thích|Nhận định/.test(headerText) && /Đúng|Sai|Đ\/A/.test(headerText);
-}
+const NEW_CONTEXT =
+  /^(Sử dụng|Dựa vào|Đọc|Xem xét|Căn cứ|Kết hợp)\s+(thông tin|đoạn|bài|hình|bảng|đề|đồ thị)/i;
+const PRESERVED_CONTEXT =
+  /^Bài đọc|^Đoạn văn sau|^Thông tin sau|^DẶN DÒ|^Dặn dò|^Nguồn\s*[:：]|^Trích\s*(SGK|SBT)/;
+/** "Đáp án: A. ____" dạng mẫu điền — chỉ giữ khi có gạch chân */
+const ANSWER_WITH_CHOICES = /^(Đáp án|Đ\/A)\s*[:.]?\s*[A-D]\./;
+const FILL_BLANK_ONLY = /_{2,}/;
 
 function hasMath(p: XElement): boolean {
   const walk = (n: XNode): boolean => {
@@ -54,9 +50,7 @@ function hasMath(p: XElement): boolean {
   return walk(p);
 }
 
-/**
- * Thu thập các w:p và w:tbl trong body theo thứ tự → mảng đánh chỉ số chung
- */
+/** Thu thập các w:p và w:tbl trong body theo thứ tự → mảng đánh chỉ số chung */
 function indexBody(body: XElement): Array<{ el: XElement; isTable: boolean }> {
   const out: Array<{ el: XElement; isTable: boolean }> = [];
   for (const child of childrenOf(body)) {
@@ -67,176 +61,276 @@ function indexBody(body: XElement): Array<{ el: XElement; isTable: boolean }> {
 }
 
 /**
- * Chuyển đổi chính: thao tác trực tiếp trên body XML.
+ * Tính tập block cần XÓA (đáp án/hướng dẫn giải) — dùng chung PHT & Live.
+ * Trả về Set index block.
+ */
+function computeRemoveSet(blocks: DocBlock[]): { toRemove: Set<number> } {
+  const toRemove = new Set<number>();
+  let inG = false; // đang duyệt khối đáp án/hướng dẫn
+
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (b.kind === "table") {
+      const t = b as unknown as { rows: { text: string }[][] };
+      const header = (t.rows[0] || []).map((c) => c.text).join(" ");
+      // Bảng GIẢI THÍCH đáp án (xóa độc lập):
+      //  1) header "Ý | Đ/A | Giải thích"
+      //  2) cột đầu dòng 0 "a) Đúng/Sai" + dòng 1 có nội dung giải
+      const isExplanation =
+        (/Đ\/A/.test(header) && /Giải thích/.test(header)) ||
+        ((t.rows[0] || []).some((c) => /^a\s*\)?\s*(Đúng|Sai)\b/.test(c.text.trim())) &&
+          (t.rows[1] || []).some((c) => c.text.trim().length > 2));
+      if (isExplanation) toRemove.add(i);
+      continue;
+    }
+    const blk = b as Block;
+    const txt = blk.text.trim();
+    if (inG) {
+      if (
+        QNUM.test(txt) ||
+        blk.kind === "heading" ||
+        NEW_CONTEXT.test(txt) ||
+        PRESERVED_CONTEXT.test(txt)
+      ) {
+        inG = false;
+        continue; // điểm dừng khối giải — giữ
+      }
+      if (ANSWER_WITH_CHOICES.test(txt) && FILL_BLANK_ONLY.test(txt)) continue; // mẫu điền
+      toRemove.add(i); // nội dung giải / đáp án thật
+      continue;
+    }
+    if (blk.kind === "guideline" || blk.kind === "answer") {
+      if (ANSWER_WITH_CHOICES.test(txt) && FILL_BLANK_ONLY.test(txt)) continue; // mẫu điền
+      toRemove.add(i);
+      inG = true;
+    }
+  }
+  return { toRemove };
+}
+
+/** Xóa các block đã đánh dấu khỏi body */
+function removeBlocks(body: XElement, idx: Array<{ el: XElement; isTable: boolean }>, toRemove: Set<number>): number {
+  let n = 0;
+  for (let i = 0; i < idx.length; i++) {
+    if (toRemove.has(i)) {
+      idx[i].el.parentNode!.removeChild(idx[i].el);
+      n++;
+    }
+  }
+  return n;
+}
+
+/**
+ * Chuyển đổi chính.
  */
 export function convertDom(blocks: DocBlock[], body: XElement, mode: OutputMode): ConvertResult {
   const notes: string[] = [];
   const result: ConvertResult = {
     blocks, answersRemoved: 0, guidelinesRemoved: 0, blanksCreated: 0, notes,
   };
-
   const idx = indexBody(body);
   if (idx.length !== blocks.length) {
-    notes.push(`Cảnh báo: số block model (${blocks.length}) khác số phần tử body (${idx.length}) — có thể có phần tử lạ.`);
+    notes.push(`Cảnh báo: số block model (${blocks.length}) khác số phần tử body (${idx.length}).`);
   }
-
   const doc = body.ownerDocument;
 
   // ===================== PHT =====================
-    if (mode === "pht") {
-      // Nguồn tham chiếu: PHT mẫu do người biên soạn.
-      // - GIỮ: mục tiêu, lý thuyết + đoạn dài (đề chung "Sử dụng thông tin...", ngữ liệu),
-      //         câu hỏi, bảng đúng/sai/điền từ, "DẶN DÒ".
-      // - XÓA CHỈ: khối "Đáp án/Hướng dẫn/Lời giải" + nội dung giải ngay sau.
-      // Điểm dừng khối giải: câu hỏi mới, heading, "Sử dụng thông tin...", đề chung
-      // điều kiện, hay hết tài liệu.
-      const toRemove = new Set<number>();
-            const QNUM_LOCAL = /^[Cc]âu\s*(\d+)\s*[.:]/;
-            // Điểm dừng khối giải = NGỮ LIỆU/ĐỀ mới (phải GIỮ)
-            const NEW_CONTEXT =
-              /^(Sử dụng|Dựa vào|Đọc|Xem xét|Căn cứ|Kết hợp)\s+(thông tin|đoạn|bài|hình|bảng|đề|đồ thị)/i;
-            const PRESERVED_CONTEXT = /^Bài đọc|^Đoạn văn sau|^Thông tin sau|^DẶN DÒ|^Dặn dò|^Nguồn\s*[:：]|^Trích\s*(SGK|SBT)/;
-            // "Đáp án: A. ____; ____ B. ____" = PHƯƠNG ÁN ĐIỀN (câu hỏi) — GIỮ, không xóa
-                        // "Đáp án: A. ____; ____ B. ____" = PHƯƠNG ÁN ĐIỀN (câu hỏi) — GIỮ, không xóa.
-                                    // "Đáp án. A. 1,3; B. 2,4; C. 5" = ĐÁP ÁN THẬT — XÓA (không phải mẫu điền).
-                                    const ANSWER_WITH_CHOICES = /^(Đáp án|Đ\/A)\s*[:.]?\s*[A-D]\./;
-                                    const FILL_BLANK_ONLY = /_{2,}/;
-      let inGuideline = false; // đang duyệt khối đáp án/hướng dẫn
-      for (let i = 0; i < blocks.length; i++) {
-        const b = blocks[i];
-        if (b.kind === "table") {
-                  const t = b as unknown as { rows: { text: string }[][] };
-                  const header = (t.rows[0] || []).map((c) => c.text).join(" ");
-                  // Bảng GIẢI THÍCH đáp án — NHẬN DIỆN ĐỘC LẬP (xóa luôn, không cần inGuideline):
-                  //  1) header chứa "Đ/A" + "Giải thích" ("Ý | Đ/A | Giải thích")
-                  //  2) cột đầu dòng 0 khớp "a) Đúng/Sai"/"a Đúng" + có nội dung giải (>2 ký tự)
-                  // KHÔNG nhầm bảng câu hỏi Đ/S: header "Phát biểu | Đúng | Sai" (cột Đúng/Sai rỗng để HS tick).
-                  const isExplanation =
-                    (/Đ\/A/.test(header) && /Giải thích/.test(header)) ||
-                    ((t.rows[0] || []).some((c) => /^a\s*\)?\s*(Đúng|Sai)\b/.test(c.text.trim())) &&
-                     (t.rows[1] || []).some((c) => c.text.trim().length > 2));
-                  if (isExplanation) toRemove.add(i);
-                  continue;
-                }
-        const blk = b as Block;
-        const txt = blk.text.trim();
-        if (inGuideline) {
-                          // Điểm dừng khối giải: câu hỏi mới / heading / ngữ liệu mới
-                          if (
-                            QNUM_LOCAL.test(txt) ||
-                            blk.kind === "heading" ||
-                            NEW_CONTEXT.test(txt) ||
-                            PRESERVED_CONTEXT.test(txt)
-                          ) {
-                            inGuideline = false;
-                            continue; // không xóa block dừng
-                          }
-                          if (ANSWER_WITH_CHOICES.test(txt) && FILL_BLANK_ONLY.test(txt)) {
-                            // "Đáp án: A. ____" = mẫu điền — GIỮ, không kết thúc khối
-                            continue;
-                          }
-                          // nội dung giải / đáp án thật — xóa
-                          toRemove.add(i);
-                          continue;
-                        }
-                                  if (blk.kind === "guideline" || blk.kind === "answer") {
-                                              // "Đáp án: A. ____" = mẫu điền — KHÔNG mở khối xóa
-                                              if (ANSWER_WITH_CHOICES.test(txt) && FILL_BLANK_ONLY.test(txt)) continue;
-                                              toRemove.add(i);
-                                              inGuideline = true;
-                                            }
-      }
+  if (mode === "pht") {
+    const { toRemove } = computeRemoveSet(blocks);
+    result.answersRemoved = removeBlocks(body, idx, toRemove);
+    notes.push(`Đã xóa ${result.answersRemoved} block đáp án/hướng dẫn/bảng giải thích.`);
 
-      let removedCount = 0;
-      for (let i = 0; i < idx.length; i++) {
-        if (toRemove.has(i)) {
-          idx[i].el.parentNode!.removeChild(idx[i].el);
-          removedCount++;
-        }
-      }
-      result.answersRemoved = removedCount;
-      notes.push(`Đã xóa ${removedCount} block thuộc khối đáp án/hướng dẫn.`);
-
-    // 3) Blank hóa lý thuyết — trong MỌI vùng kiến thức (mỗi heading I/II/III mở vùng mới),
-        //    chỉ blank các lý thuyết TRƯỚC câu hỏi đầu của vùng đó (khớp PHT mẫu).
-        //    QUAN TRỌNG: tọa độ region phải tính trên RAW paragraphText(p) (chưa trim)
-        //    vì applyBlanks khớp tọa độ trên cùng text đó.
-        let blanks = 0;
-        let questionSeenInSection = false; // reset mỗi khi gặp heading
-        blocks.forEach((b, i) => {
-          if (b.kind === "table" || i >= idx.length || idx[i].isTable) return;
-          const blk = b as Block;
-          if (blk.kind === "heading") questionSeenInSection = false;
-          if (blk.kind === "question") questionSeenInSection = true;
-          if (questionSeenInSection || blk.kind !== "theory") return;
-          const p = idx[i].el as XElement;
-                    const raw = paragraphText(p); // RAW — giữ tab/khoảng trắng đầu
-                    const txt = raw.trim();
-                    if (!txt || txt.length > 600) return;
-                    if (hasMath(p)) return;
-                    // regions tính trên trimmed; shift sang raw (leading whitespace)
-                    const offset = raw.length - raw.trimStart().length;
-                    const regions = findBlankRegions(txt)
-                      .map(([s, e]) => [s + offset, e + offset] as [number, number]);
-                    if (!regions.length) return;
-                    blanks += applyBlanks(p, doc, regions);
-        });
+    // Blank hóa lý thuyết — trong MỌI vùng kiến thức (heading mở vùng mới),
+    // chỉ blank lý thuyết TRƯỚC câu hỏi đầu của vùng (khớp PHT mẫu).
+    let blanks = 0;
+    let questionSeenInSection = false;
+    blocks.forEach((b, i) => {
+      if (b.kind === "table" || i >= idx.length || idx[i].isTable) return;
+      const blk = b as Block;
+      if (blk.kind === "heading") questionSeenInSection = false;
+      if (blk.kind === "question") questionSeenInSection = true;
+      if (questionSeenInSection || blk.kind !== "theory") return;
+      const p = idx[i].el as XElement;
+      const raw = paragraphText(p); // RAW — giữ tab đầu
+      const txt = raw.trim();
+      if (!txt || txt.length > 600) return;
+      if (hasMath(p)) return;
+      const offset = raw.length - raw.trimStart().length;
+      const regions = findBlankRegions(txt).map(([s, e]) => [s + offset, e + offset] as [number, number]);
+      if (!regions.length) return;
+      blanks += applyBlanks(p, doc, regions);
+    });
     result.blanksCreated = blanks;
     notes.push(`Đã tạo ${blanks} chỗ trống kiến thức.`);
   }
 
   // ===================== LIVE =====================
-    if (mode === "live") {
-      // 1) Chuyển trang sang NGANG (landscape) — dễ giáo viên viết khi chữa bài.
-      //    Chỉnh sectPr cuối body (w:pgSz w:orient="landscape", đổi w/h).
-      const sectPr = childrenOf(body).find((c) => isW(c, "sectPr"));
-      if (sectPr) {
-        const pgSz = childrenOf(sectPr).find((c) => isW(c, "pgSz"));
-        if (pgSz) {
-          pgSz.setAttribute("w:orient", "landscape");
-          pgSz.setAttribute("w:w", "16838"); // A4 dọc 11906 → ngang 16838
-          pgSz.setAttribute("w:h", "11906");
-        } else {
-          const sz = createW(doc, "pgSz");
-          sz.setAttribute("w:orient", "landscape");
-          sz.setAttribute("w:w", "16838");
-          sz.setAttribute("w:h", "11906");
-          sectPr.appendChild(sz);
-        }
+  if (mode === "live") {
+    // ----- 1) Template kỳ thi: trang NGANG + margin đúng mẫu -----
+    const sectPr = childrenOf(body).find((c) => isW(c, "sectPr"));
+    if (sectPr) {
+      const pgSz = childrenOf(sectPr).find((c) => isW(c, "pgSz"));
+      if (pgSz) {
+        pgSz.setAttribute("w:orient", "landscape");
+        pgSz.setAttribute("w:w", "16840");
+        pgSz.setAttribute("w:h", "11907");
+      } else {
+        const sz = createW(doc, "pgSz");
+        sz.setAttribute("w:orient", "landscape");
+        sz.setAttribute("w:w", "16840");
+        sz.setAttribute("w:h", "11907");
+        sectPr.appendChild(sz);
       }
-      // 2) Giữ nguyên nội dung GV; thêm vùng trả lời = DÒNG KẺ (underline spaces)
-      //    sau mỗi câu hỏi để giáo viên ghi trong lúc chữa bài.
-      const parIdx = new Map<number, XElement>();
-      blocks.forEach((b, i) => {
-        if (b.kind !== "table" && i < idx.length) {
-          parIdx.set(i, idx[i].el as XElement);
-        }
-      });
-      let inserted = 0;
-      for (let i = blocks.length - 1; i >= 0; i--) {
-        const b = blocks[i];
-        if (b.kind === "table") continue;
-        const blk = b as Block;
-        if (blk.kind !== "question") continue;
-        const p = parIdx.get(i);
-        if (!p) continue;
-        const ans = createWritingLine(doc);
-        p.parentNode!.insertBefore(ans, p.nextSibling);
-        inserted++;
+      const pgMar = childrenOf(sectPr).find((c) => isW(c, "pgMar"));
+      if (pgMar) {
+        pgMar.setAttribute("w:top", "1560");
+        pgMar.setAttribute("w:right", "720");
+        pgMar.setAttribute("w:bottom", "720");
+        pgMar.setAttribute("w:left", "720");
+        pgMar.setAttribute("w:header", "284");
+        pgMar.setAttribute("w:footer", "284");
+        pgMar.setAttribute("w:gutter", "0");
       }
-      result.notes.push(`Live: trang ngang + ${inserted} dòng kẻ sau câu hỏi (giữ nguyên nội dung GV).`);
     }
+
+    // ----- 2) Xóa mọi HIGHLIGHT (đánh dấu màu đáp án) -----
+    const hlNodes: XElement[] = [];
+    const walkHl = (n: XNode) => {
+      for (let i = 0; i < n.childNodes.length; i++) {
+        const c = n.childNodes[i];
+        if (localName(c) === "highlight") hlNodes.push(c as XElement);
+        walkHl(c);
+      }
+    };
+    walkHl(body);
+    for (const hl of hlNodes) hl.parentNode!.removeChild(hl);
+
+    // ----- 3) Xóa đáp án + hướng dẫn giải -----
+    const { toRemove } = computeRemoveSet(blocks);
+    result.answersRemoved = removeBlocks(body, idx, toRemove);
+
+    // ----- 4) Gom câu hỏi vào BẢNG 2 cột viền đỏ (template Live) -----
+    //    Nhóm = câu hỏi + phương án/theory ngắn liền sau, đến câu kế/heading/instruction/table.
+    const RED = "C00000";
+    const groups: Array<{ elems: XElement[] }> = [];
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i];
+      if (b.kind === "table") continue;
+      if ((b as Block).kind !== "question") continue;
+      const els: XElement[] = [];
+      let j = i;
+      while (j < blocks.length) {
+        const bb = blocks[j];
+        if (bb.kind === "table") break;
+        const bblk = bb as Block;
+        if (j > i && (bblk.kind === "question" || bblk.kind === "heading" || bblk.kind === "instruction")) break;
+        if (j < idx.length && !idx[j].isTable) {
+          const el = idx[j].el as XElement;
+          if (el.parentNode) els.push(el); // bỏ phần tử đã bị xóa (trong khối giải)
+        }
+        j++;
+      }
+      if (els.length) groups.push({ elems: els });
+      i = j - 1;
+    }
+
+    // Xây bảng 1x2 và DI CHUYỂN paragraph gốc vào cột trái
+    for (const g of groups) {
+      const tbl = buildQuestionTable(doc, RED);
+      const first = g.elems[0];
+      first.parentNode!.insertBefore(tbl, first);
+      for (const el of g.elems) el.parentNode!.removeChild(el);
+      const leftCell = findLeftCell(tbl);
+      if (leftCell) {
+        for (const el of g.elems) leftCell.appendChild(el);
+      }
+    }
+
+    notes.push(
+      `Live: template ngang + ${hlNodes.length} highlight đã bỏ + ${result.answersRemoved} block đáp án/hướng dẫn đã xóa + ${groups.length} bảng câu hỏi có dòng kẻ.`,
+    );
+  }
 
   return result;
 }
 
-/** Tạo paragraph dòng kẻ (underline spaces) để giáo viên viết khi chữa bài */
-function createWritingLine(doc: XDocument): XElement {
+/** Tìm ô (tc) đầu tiên của bảng */
+function findLeftCell(tbl: XElement): XElement | null {
+  for (const c of childrenOf(tbl)) {
+    if (isW(c, "tr")) {
+      for (const tc of childrenOf(c)) {
+        if (isW(tc, "tc")) return tc;
+      }
+    }
+  }
+  return null;
+}
+
+/** Tạo bảng 1x2 viền đỏ: cột trái chứa câu hỏi, cột phải chứa dòng kẻ viết */
+function buildQuestionTable(doc: XDocument, red: string): XElement {
+  const tbl = createW(doc, "tbl");
+  const tblPr = createW(doc, "tblPr");
+  const tblW = createW(doc, "tblW");
+  tblW.setAttribute("w:w", "0");
+  tblW.setAttribute("w:type", "auto");
+  tblPr.appendChild(tblW);
+  const jc = createW(doc, "jc");
+  jc.setAttribute("w:val", "center");
+  tblPr.appendChild(jc);
+  const borders = createW(doc, "tblBorders");
+  for (const side of ["top", "left", "bottom", "right", "insideH", "insideV"]) {
+    const b = createW(doc, side);
+    b.setAttribute("w:val", "single");
+    b.setAttribute("w:sz", "4");
+    b.setAttribute("w:space", "0");
+    b.setAttribute("w:color", red);
+    borders.appendChild(b);
+  }
+  tblPr.appendChild(borders);
+  tbl.appendChild(tblPr);
+
+  const grid = createW(doc, "tblGrid");
+  for (const w of [9000, 6000]) {
+    const gc = createW(doc, "gridCol");
+    gc.setAttribute("w:w", String(w));
+    grid.appendChild(gc);
+  }
+  tbl.appendChild(grid);
+
+  const tr = createW(doc, "tr");
+  // ô trái — câu hỏi (paragraph di chuyển vào sau)
+  const tcL = createW(doc, "tc");
+  const tcPrL = createW(doc, "tcPr");
+  const tcWL = createW(doc, "tcW");
+  tcWL.setAttribute("w:w", "9000");
+  tcWL.setAttribute("w:type", "dxa");
+  tcPrL.appendChild(tcWL);
+  tcL.appendChild(tcPrL);
+  tcL.appendChild(createW(doc, "p")); // paragraph đệm để ô hợp lệ
+  tr.appendChild(tcL);
+
+  // ô phải — dòng kẻ để GV viết chữa bài
+  const tcR = createW(doc, "tc");
+  const tcPrR = createW(doc, "tcPr");
+  const tcWR = createW(doc, "tcW");
+  tcWR.setAttribute("w:w", "6000");
+  tcWR.setAttribute("w:type", "dxa");
+  tcPrR.appendChild(tcWR);
+  tcR.appendChild(tcPrR);
+  tcR.appendChild(makeUnderlinePara(doc, 70));
+  tcR.appendChild(makeUnderlinePara(doc, 70));
+  tr.appendChild(tcR);
+
+  tbl.appendChild(tr);
+  return tbl;
+}
+
+/** Paragraph dòng kẻ: underline spaces để viết lên trên */
+function makeUnderlinePara(doc: XDocument, nSpaces: number): XElement {
   const p = createW(doc, "p");
   const pPr = createW(doc, "pPr");
   const ind = createW(doc, "ind");
-  ind.setAttribute("w:left", "360");
-  ind.setAttribute("w:right", "360");
+  ind.setAttribute("w:left", "120");
   pPr.appendChild(ind);
   p.appendChild(pPr);
   const r = createW(doc, "r");
@@ -247,8 +341,7 @@ function createWritingLine(doc: XDocument): XElement {
   r.appendChild(rPr);
   const t = createW(doc, "t");
   t.setAttribute("xml:space", "preserve");
-  // 100 khoảng trắng gạch dưới → kẻ liền nét, viết được lên trên
-  t.appendChild(doc.createTextNode(" ".repeat(100)));
+  t.appendChild(doc.createTextNode(" ".repeat(nSpaces)));
   r.appendChild(t);
   p.appendChild(r);
   return p;
