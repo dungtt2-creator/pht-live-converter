@@ -5,8 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
-    "test:convert": "tsx scripts/convert-cli.ts"
+    "start": "npx serve@latest -s out -l 3000",
+    "test:convert": "tsx scripts/convert-cli.ts",
+    "e2e": "tsx scripts/e2e.ts"
   },
   "dependencies": {
     "autoprefixer": "^10.6.1",
