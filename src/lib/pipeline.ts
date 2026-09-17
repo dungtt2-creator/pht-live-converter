@@ -7,6 +7,7 @@ import JSZip from "jszip";
 import { loadDocx, parseXmlBlocks } from "./parser";
 import { convertParsed, type OutputMode, type ConvertResult } from "./converter";
 import { serializeXml, stripRedundantXmlns } from "./xml";
+import type { TemplateId } from "./template";
 
 export interface ConversionOutput {
   pht: ArrayBuffer | null;
@@ -22,6 +23,8 @@ export interface ConvertOptions {
   modes: OutputMode[];
   /** Tên file gốc để đặt tên output */
   fileName?: string;
+  /** Template kỳ thi (màu sắc + banner); mặc định TSA */
+  templateId?: TemplateId;
 }
 
 /** Pack lại docx với document.xml mới */
@@ -71,7 +74,7 @@ export async function convertDocx(
   // Mỗi mode parse XML TƯƠI để không bị đột biến DOM của mode trước
   for (const mode of options.modes) {
     const parsed = parseXmlBlocks(xml, media);
-    const result = convertParsed(parsed.blocks, parsed.body, mode);
+    const result = convertParsed(parsed.blocks, parsed.body, mode, options.templateId ?? "tsa");
     const newXml = serializeXml(parsed.doc);
     if (mode === "pht") {
       pht = await packDocx(zip, newXml);

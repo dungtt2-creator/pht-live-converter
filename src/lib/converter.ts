@@ -18,6 +18,7 @@ import { localName, childrenOf, isW, paragraphText, createWElement } from "./xml
 import type { XNode, XElement, XDocument } from "./xml";
 import type { DocBlock, Block } from "./model";
 import { applyBlanks, findBlankRegions } from "./blanker";
+import { getTemplate, type TemplateId } from "./template";
 
 export type OutputMode = "pht" | "live";
 
@@ -123,16 +124,26 @@ function removeBlocks(body: XElement, idx: Array<{ el: XElement; isTable: boolea
 /**
  * Chuyển đổi chính.
  */
-export function convertDom(blocks: DocBlock[], body: XElement, mode: OutputMode): ConvertResult {
+export function convertDom(blocks: DocBlock[], body: XElement, mode: OutputMode, templateId: TemplateId = "tsa"): ConvertResult {
   const notes: string[] = [];
   const result: ConvertResult = {
     blocks, answersRemoved: 0, guidelinesRemoved: 0, blanksCreated: 0, notes,
   };
+  const tpl = getTemplate(templateId);
   const idx = indexBody(body);
   if (idx.length !== blocks.length) {
     notes.push(`Cảnh báo: số block model (${blocks.length}) khác số phần tử body (${idx.length}).`);
   }
   const doc = body.ownerDocument;
+
+  // ===== 0) Chèn dòng banner nhận diện kỳ thi ngay đầu tài liệu =====
+  // Chèn vào ĐẦU body, trước mọi block (giữ nguyên nội dung gốc phía sau).
+  if (idx.length > 0) {
+    const banner = makeBannerPara(doc, tpl.header, tpl.color);
+    const firstEl = idx[0].el;
+    body.insertBefore(banner, firstEl);
+    notes.push(`Template: ${tpl.label} — đã chèn banner "${tpl.header}".`);
+  }
 
   // ===================== PHT =====================
   if (mode === "pht") {
@@ -209,9 +220,9 @@ export function convertDom(blocks: DocBlock[], body: XElement, mode: OutputMode)
     const { toRemove } = computeRemoveSet(blocks);
     result.answersRemoved = removeBlocks(body, idx, toRemove);
 
-    // ----- 4) Gom câu hỏi vào BẢNG 2 cột viền đỏ (template Live) -----
-    //    Nhóm = câu hỏi + phương án/theory ngắn liền sau, đến câu kế/heading/instruction/table.
-    const RED = "C00000";
+    // ----- 4) Gom câu hỏi vào BẢNG 2 cột viền MÀU TEMPLATE (form Live) -----
+        //    Nhóm = câu hỏi + phương án/theory ngắn liền sau, đến câu kế/heading/instruction/table.
+        const RED = tpl.color;
     const groups: Array<{ elems: XElement[] }> = [];
     for (let i = 0; i < blocks.length; i++) {
       const b = blocks[i];
@@ -351,7 +362,37 @@ function createW(doc: XDocument, name: string): XElement {
   return createWElement(doc, name);
 }
 
+/** Tạo paragraph banner nhận diện kỳ thi: in đậm, màu template, căn giữa */
+function makeBannerPara(doc: XDocument, text: string, color: string): XElement {
+  const p = createW(doc, "p");
+  const pPr = createW(doc, "pPr");
+  const jc = createW(doc, "jc");
+  jc.setAttribute("w:val", "center");
+  pPr.appendChild(jc);
+  const spacing = createW(doc, "spacing");
+  spacing.setAttribute("w:after", "160");
+  pPr.appendChild(spacing);
+  p.appendChild(pPr);
+  const r = createW(doc, "r");
+  const rPr = createW(doc, "rPr");
+  const b = createW(doc, "b");
+  rPr.appendChild(b);
+  const col = createW(doc, "color");
+  col.setAttribute("w:val", color);
+  rPr.appendChild(col);
+  const sz = createW(doc, "sz");
+  sz.setAttribute("w:val", "32"); // 16pt
+  rPr.appendChild(sz);
+  r.appendChild(rPr);
+  const t = createW(doc, "t");
+  t.setAttribute("xml:space", "preserve");
+  t.appendChild(doc.createTextNode(text));
+  r.appendChild(t);
+  p.appendChild(r);
+  return p;
+}
+
 /** API ổn định */
-export function convertParsed(blocks: DocBlock[], body: XElement, mode: OutputMode): ConvertResult {
-  return convertDom(blocks, body, mode);
+export function convertParsed(blocks: DocBlock[], body: XElement, mode: OutputMode, templateId: TemplateId = "tsa"): ConvertResult {
+  return convertDom(blocks, body, mode, templateId);
 }

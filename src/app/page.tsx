@@ -3,6 +3,8 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { convertDocx, outputFileName } from "@/lib/pipeline";
 import type { ConvertResult } from "@/lib/converter";
+import { TEMPLATES, DEFAULT_TEMPLATE } from "@/lib/template";
+import type { TemplateId } from "@/lib/template";
 
 type Phase = "idle" | "converting" | "done" | "error";
 
@@ -35,6 +37,7 @@ export default function Converter() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [err, setErr] = useState<string>("");
   const [payload, setPayload] = useState<Payload | null>(null);
+  const [templateId, setTemplateId] = useState<TemplateId>(DEFAULT_TEMPLATE);
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
 
@@ -50,7 +53,7 @@ export default function Converter() {
     try {
       const ab = await file.arrayBuffer();
       const t0 = performance.now();
-      const out = await convertDocx(ab, { modes: ["pht", "live"], fileName: file.name });
+      const out = await convertDocx(ab, { modes: ["pht", "live"], fileName: file.name, templateId });
       const ms = Math.round(performance.now() - t0);
       const base = file.name.replace(/\.docx?$/i, "");
       setPayload({
@@ -106,6 +109,38 @@ export default function Converter() {
           thêm vùng trả lời). Xử lý hoàn toàn trên máy bạn — không gửi dữ liệu lên server.
         </p>
       </header>
+
+      {/* Chọn template kỳ thi */}
+      <div className="mb-6">
+        <p className="mb-2 text-center text-sm font-semibold text-slate-600">
+          Chọn template kỳ thi / hệ thống:
+        </p>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+          {TEMPLATES.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setTemplateId(t.id as TemplateId)}
+              className={`rounded-xl border-2 px-3 py-2 text-center transition ${
+                templateId === t.id
+                  ? "border-transparent text-white shadow-md"
+                  : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+              }`}
+              style={
+                templateId === t.id
+                  ? { backgroundColor: `#${t.color}` }
+                  : { borderColor: `#${t.color}` }
+              }
+              title={t.desc}
+            >
+              <span className="block text-sm font-bold">{t.label}</span>
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-center text-xs text-slate-400">
+          {TEMPLATES.find((t) => t.id === templateId)?.desc}
+        </p>
+      </div>
 
       <div
         onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
