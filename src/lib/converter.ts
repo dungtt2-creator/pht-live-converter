@@ -97,45 +97,54 @@ export function convertDom(blocks: DocBlock[], body: XElement, mode: OutputMode)
               /^(Sử dụng|Dựa vào|Đọc|Xem xét|Căn cứ|Kết hợp)\s+(thông tin|đoạn|bài|hình|bảng|đề|đồ thị)/i;
             const PRESERVED_CONTEXT = /^Bài đọc|^Đoạn văn sau|^Thông tin sau|^DẶN DÒ|^Dặn dò|^Nguồn\s*[:：]|^Trích\s*(SGK|SBT)/;
             // "Đáp án: A. ____; ____ B. ____" = PHƯƠNG ÁN ĐIỀN (câu hỏi) — GIỮ, không xóa
-                        const ANSWER_WITH_CHOICES =
-                          /^(Đáp án|Đ\/A)\s*[:.]?\s*[A-D]\.|____|___{2,}|^(Đáp án|Đ\/A)\s*[:.]?\s*[A-D]\.\s*\d+[,.;]/;
+                        // "Đáp án: A. ____; ____ B. ____" = PHƯƠNG ÁN ĐIỀN (câu hỏi) — GIỮ, không xóa.
+                                    // "Đáp án. A. 1,3; B. 2,4; C. 5" = ĐÁP ÁN THẬT — XÓA (không phải mẫu điền).
+                                    const ANSWER_WITH_CHOICES = /^(Đáp án|Đ\/A)\s*[:.]?\s*[A-D]\./;
+                                    const FILL_BLANK_ONLY = /_{2,}/;
       let inGuideline = false; // đang duyệt khối đáp án/hướng dẫn
       for (let i = 0; i < blocks.length; i++) {
         const b = blocks[i];
         if (b.kind === "table") {
-          const t = b as unknown as { rows: { text: string }[][] };
-          const header = (t.rows[0] || []).map((c) => c.text).join(" ");
-          const isExplanation = /Đ\/A|Giải thích/.test(header) && /Đúng|Sai/.test(header);
-          if (inGuideline && isExplanation) toRemove.add(i);
-          // Các bảng khác (đúng/sai, kéo-thả, bảng số liệu) luôn GIỮ — kể cả trong khối giải
-          continue;
-        }
+                  const t = b as unknown as { rows: { text: string }[][] };
+                  const header = (t.rows[0] || []).map((c) => c.text).join(" ");
+                  // Bảng GIẢI THÍCH đáp án — NHẬN DIỆN ĐỘC LẬP (xóa luôn, không cần inGuideline):
+                  //  1) header chứa "Đ/A" + "Giải thích" ("Ý | Đ/A | Giải thích")
+                  //  2) cột đầu dòng 0 khớp "a) Đúng/Sai"/"a Đúng" + có nội dung giải (>2 ký tự)
+                  // KHÔNG nhầm bảng câu hỏi Đ/S: header "Phát biểu | Đúng | Sai" (cột Đúng/Sai rỗng để HS tick).
+                  const isExplanation =
+                    (/Đ\/A/.test(header) && /Giải thích/.test(header)) ||
+                    ((t.rows[0] || []).some((c) => /^a\s*\)?\s*(Đúng|Sai)\b/.test(c.text.trim())) &&
+                     (t.rows[1] || []).some((c) => c.text.trim().length > 2));
+                  if (isExplanation) toRemove.add(i);
+                  continue;
+                }
         const blk = b as Block;
         const txt = blk.text.trim();
         if (inGuideline) {
-                  // Điểm dừng khối giải: câu hỏi mới / heading / ngữ liệu mới
-                  if (
-                    QNUM_LOCAL.test(txt) ||
-                    blk.kind === "heading" ||
-                    NEW_CONTEXT.test(txt) ||
-                    PRESERVED_CONTEXT.test(txt) ||
-                    ANSWER_WITH_CHOICES.test(txt)
-                  ) {
-                    if (!ANSWER_WITH_CHOICES.test(txt)) {
-                      inGuideline = false;
-                    }
-                    continue; // không xóa block dừng (kể cả "Đáp án: A. ____" dạng câu hỏi)
-                  }
-                  // nội dung giải — xóa
-                                    toRemove.add(i);
-                                    continue;
-                                  }
-                          if (blk.kind === "guideline" || blk.kind === "answer") {
-                                      // "Đáp án. A. 1,3; B. 2,4; C. 5" / "Đáp án: A. ____" = MẪU ĐIỀN (câu nối/điền) — GIỮ, không mở khối xóa
-                                      if (blk.kind === "answer" && (ANSWER_WITH_CHOICES.test(txt) || /_{2,}/.test(txt))) continue;
-                                      toRemove.add(i);
-                                      inGuideline = true;
-                                    }
+                          // Điểm dừng khối giải: câu hỏi mới / heading / ngữ liệu mới
+                          if (
+                            QNUM_LOCAL.test(txt) ||
+                            blk.kind === "heading" ||
+                            NEW_CONTEXT.test(txt) ||
+                            PRESERVED_CONTEXT.test(txt)
+                          ) {
+                            inGuideline = false;
+                            continue; // không xóa block dừng
+                          }
+                          if (ANSWER_WITH_CHOICES.test(txt) && FILL_BLANK_ONLY.test(txt)) {
+                            // "Đáp án: A. ____" = mẫu điền — GIỮ, không kết thúc khối
+                            continue;
+                          }
+                          // nội dung giải / đáp án thật — xóa
+                          toRemove.add(i);
+                          continue;
+                        }
+                                  if (blk.kind === "guideline" || blk.kind === "answer") {
+                                              // "Đáp án: A. ____" = mẫu điền — KHÔNG mở khối xóa
+                                              if (ANSWER_WITH_CHOICES.test(txt) && FILL_BLANK_ONLY.test(txt)) continue;
+                                              toRemove.add(i);
+                                              inGuideline = true;
+                                            }
       }
 
       let removedCount = 0;
@@ -177,42 +186,57 @@ export function convertDom(blocks: DocBlock[], body: XElement, mode: OutputMode)
   }
 
   // ===================== LIVE =====================
-  if (mode === "live") {
-    // Giữ nguyên toàn bộ nội dung GV; chỉ thêm vùng trả lời sau câu hỏi (MVP: thêm dòng chấm).
-    // Bật tính năng "thêm vùng viết" có kiểm soát: sau mỗi block question, chèn 1 paragraph
-    // gạch chân dài để HS ghi bài (không làm mất nội dung gốc).
-    const parIdx = new Map<number, XElement>();
-    blocks.forEach((b, i) => {
-      if (b.kind !== "table" && i < idx.length) {
-        parIdx.set(i, idx[i].el as XElement);
+    if (mode === "live") {
+      // 1) Chuyển trang sang NGANG (landscape) — dễ giáo viên viết khi chữa bài.
+      //    Chỉnh sectPr cuối body (w:pgSz w:orient="landscape", đổi w/h).
+      const sectPr = childrenOf(body).find((c) => isW(c, "sectPr"));
+      if (sectPr) {
+        const pgSz = childrenOf(sectPr).find((c) => isW(c, "pgSz"));
+        if (pgSz) {
+          pgSz.setAttribute("w:orient", "landscape");
+          pgSz.setAttribute("w:w", "16838"); // A4 dọc 11906 → ngang 16838
+          pgSz.setAttribute("w:h", "11906");
+        } else {
+          const sz = createW(doc, "pgSz");
+          sz.setAttribute("w:orient", "landscape");
+          sz.setAttribute("w:w", "16838");
+          sz.setAttribute("w:h", "11906");
+          sectPr.appendChild(sz);
+        }
       }
-    });
-    let inserted = 0;
-    // Chèn từ cuối lên đầu để không lệch index
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      const b = blocks[i];
-      if (b.kind === "table") continue;
-      const blk = b as Block;
-      if (blk.kind !== "question") continue;
-      const p = parIdx.get(i);
-      if (!p) continue;
-      // không chèn nếu câu hỏi không có chỗ trả lời riêng — vẫn chèn (bản nháp live)
-      const ans = createDottedLine(doc, 60);
-      p.parentNode!.insertBefore(ans, p.nextSibling);
-      inserted++;
+      // 2) Giữ nguyên nội dung GV; thêm vùng trả lời = DÒNG KẺ (underline spaces)
+      //    sau mỗi câu hỏi để giáo viên ghi trong lúc chữa bài.
+      const parIdx = new Map<number, XElement>();
+      blocks.forEach((b, i) => {
+        if (b.kind !== "table" && i < idx.length) {
+          parIdx.set(i, idx[i].el as XElement);
+        }
+      });
+      let inserted = 0;
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i];
+        if (b.kind === "table") continue;
+        const blk = b as Block;
+        if (blk.kind !== "question") continue;
+        const p = parIdx.get(i);
+        if (!p) continue;
+        const ans = createWritingLine(doc);
+        p.parentNode!.insertBefore(ans, p.nextSibling);
+        inserted++;
+      }
+      result.notes.push(`Live: trang ngang + ${inserted} dòng kẻ sau câu hỏi (giữ nguyên nội dung GV).`);
     }
-    result.notes.push(`Live: giữ nguyên nội dung GV (${inserted} câu hỏi, đã thêm vùng trả lời).`);
-  }
 
   return result;
 }
 
-/** Tạo paragraph dòng chấm để học sinh viết trả lời */
-function createDottedLine(doc: XDocument, n: number): XElement {
+/** Tạo paragraph dòng kẻ (underline spaces) để giáo viên viết khi chữa bài */
+function createWritingLine(doc: XDocument): XElement {
   const p = createW(doc, "p");
   const pPr = createW(doc, "pPr");
   const ind = createW(doc, "ind");
   ind.setAttribute("w:left", "360");
+  ind.setAttribute("w:right", "360");
   pPr.appendChild(ind);
   p.appendChild(pPr);
   const r = createW(doc, "r");
@@ -223,7 +247,8 @@ function createDottedLine(doc: XDocument, n: number): XElement {
   r.appendChild(rPr);
   const t = createW(doc, "t");
   t.setAttribute("xml:space", "preserve");
-  t.appendChild(doc.createTextNode(".".repeat(n)));
+  // 100 khoảng trắng gạch dưới → kẻ liền nét, viết được lên trên
+  t.appendChild(doc.createTextNode(" ".repeat(100)));
   r.appendChild(t);
   p.appendChild(r);
   return p;

@@ -14,3 +14,4 @@ npm-debug.log*
 # Debug scripts chạy local
 /scripts/*.ts
 !_scripts
+.vercel
