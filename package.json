@@ -1,0 +1,31 @@
+{
+  "name": "pht-live-converter",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test:convert": "tsx scripts/convert-cli.ts"
+  },
+  "dependencies": {
+    "autoprefixer": "^10.6.1",
+    "docx": "^9.5.0",
+    "jszip": "^3.10.1",
+    "next": "^15.5.0",
+    "postcss": "^8.5.28",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@xmldom/xmldom": "^0.9.8",
+    "playwright-core": "^1.63.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.0"
+  }
+}

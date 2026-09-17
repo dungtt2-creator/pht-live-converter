@@ -1,0 +1,16 @@
+# Dependencies
+/node_modules
+
+# Next.js build
+/.next
+/out
+
+# Misc
+.DS_Store
+*.pem
+npm-debug.log*
+.env*.local
+
+# Debug scripts chạy local
+/scripts/*.ts
+!_scripts
