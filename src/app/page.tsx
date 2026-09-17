@@ -53,7 +53,12 @@ export default function Converter() {
     try {
       const ab = await file.arrayBuffer();
       const t0 = performance.now();
-      const out = await convertDocx(ab, { modes: ["pht", "live"], fileName: file.name, templateId });
+      const out = await convertDocx(ab, {
+        modes: ["pht", "live"],
+        fileName: file.name,
+        templateId,
+        useFileTemplate: true, // dùng file template thật theo kỳ thi
+      });
       const ms = Math.round(performance.now() - t0);
       const base = file.name.replace(/\.docx?$/i, "");
       setPayload({
@@ -96,17 +101,16 @@ export default function Converter() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-10">
       <header className="mb-8 text-center">
-        <p className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-sky-600">
-          TSA · V-ACT · GDPT 2018 · Ôn thi Đánh giá năng lực
-        </p>
         <h1 className="text-3xl font-bold text-slate-900">
           Chuyển tài liệu Word → Phiếu học tập &amp; Tài liệu Live
         </h1>
         <p className="mt-3 text-sm leading-relaxed text-slate-500">
           Upload file <b>.docx</b> thô của giáo viên: hệ thống tự tách{" "}
           <b>Phiếu học tập</b> (kiến thức cô đọng + chỗ trống cho học sinh, bỏ đáp
-          án/hướng dẫn) và <b>Tài liệu Live</b> (giữ nguyên 100% nội dung giáo viên,
-          thêm vùng trả lời). Xử lý hoàn toàn trên máy bạn — không gửi dữ liệu lên server.
+          án/hướng dẫn) và <b>Tài liệu Live</b> (giữ nguyên 100% kiến thức gốc, bổ
+          sung vùng để giáo viên viết ở mỗi câu hỏi khi giảng dạy trực tiếp). Xử lý
+          hoàn toàn trên máy bạn — không gửi dữ liệu lên server. Chọn kỳ thi bên dưới
+          để xuất đúng template của kỳ thi đó.
         </p>
       </header>
 
@@ -214,8 +218,8 @@ export default function Converter() {
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <h3 className="text-base font-semibold text-slate-900">🎤 Tài liệu Live</h3>
               <p className="mt-1 min-h-[3.5rem] text-xs leading-relaxed text-slate-500">
-                Cho giáo viên: giữ nguyên 100% kiến thức &amp; đáp án gốc, bổ sung vùng
-                trả lời sau mỗi câu hỏi để dạy trực tiếp.
+                Cho giáo viên: giữ nguyên 100% kiến thức gốc, bổ sung vùng để giáo
+                viên viết ở mỗi câu hỏi khi giảng dạy trực tiếp.
               </p>
               <button
                 onClick={() => download(payload.live, outputFileName(payload.name, "live"))}

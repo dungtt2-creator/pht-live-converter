@@ -124,7 +124,13 @@ function removeBlocks(body: XElement, idx: Array<{ el: XElement; isTable: boolea
 /**
  * Chuyển đổi chính.
  */
-export function convertDom(blocks: DocBlock[], body: XElement, mode: OutputMode, templateId: TemplateId = "tsa"): ConvertResult {
+export function convertDom(
+  blocks: DocBlock[],
+  body: XElement,
+  mode: OutputMode,
+  templateId: TemplateId = "tsa",
+  useFileTemplate = false,
+): ConvertResult {
   const notes: string[] = [];
   const result: ConvertResult = {
     blocks, answersRemoved: 0, guidelinesRemoved: 0, blanksCreated: 0, notes,
@@ -136,9 +142,9 @@ export function convertDom(blocks: DocBlock[], body: XElement, mode: OutputMode,
   }
   const doc = body.ownerDocument;
 
-  // ===== 0) Chèn dòng banner nhận diện kỳ thi ngay đầu tài liệu =====
-  // Chèn vào ĐẦU body, trước mọi block (giữ nguyên nội dung gốc phía sau).
-  if (idx.length > 0) {
+  // ===== 0) Banner nhận diện (chỉ khi KHÔNG dùng template file) =====
+  // Khi useFileTemplate=true, banner + sectPr đến từ file template thật (merge sau).
+  if (!useFileTemplate && idx.length > 0) {
     const banner = makeBannerPara(doc, tpl.header, tpl.color);
     const firstEl = idx[0].el;
     body.insertBefore(banner, firstEl);
@@ -362,7 +368,10 @@ function createW(doc: XDocument, name: string): XElement {
   return createWElement(doc, name);
 }
 
-/** Tạo paragraph banner nhận diện kỳ thi: in đậm, màu template, căn giữa */
+/**
+ * Tạo paragraph banner nhận diện kỳ thi: in đậm, màu template, căn giữa.
+ * (Chỉ dùng cho chế độ không template-file giữ nguyên ORIGINAL.
+ */
 function makeBannerPara(doc: XDocument, text: string, color: string): XElement {
   const p = createW(doc, "p");
   const pPr = createW(doc, "pPr");
@@ -393,6 +402,12 @@ function makeBannerPara(doc: XDocument, text: string, color: string): XElement {
 }
 
 /** API ổn định */
-export function convertParsed(blocks: DocBlock[], body: XElement, mode: OutputMode, templateId: TemplateId = "tsa"): ConvertResult {
-  return convertDom(blocks, body, mode, templateId);
+export function convertParsed(
+  blocks: DocBlock[],
+  body: XElement,
+  mode: OutputMode,
+  templateId: TemplateId = "tsa",
+  useFileTemplate = false,
+): ConvertResult {
+  return convertDom(blocks, body, mode, templateId, useFileTemplate);
 }
