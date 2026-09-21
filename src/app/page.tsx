@@ -95,6 +95,7 @@ export default function Converter() {
       q: payload.questionCount,
       blanks: payload.phtResult?.blanksCreated ?? 0,
       removed: payload.phtResult?.answersRemoved ?? 0,
+      tags: payload.phtResult?.hocmaiTagsAdded ?? 0,
     };
   }, [payload]);
 
@@ -197,7 +198,10 @@ export default function Converter() {
           <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
             ✅ Xử lý xong <b>{payload.name}</b> trong {payload.ms} ms —{" "}
             {stats.q} câu hỏi phát hiện, {stats.blanks} chỗ trống tạo, {stats.removed} khối
-            đáp án/hướng dẫn đã loại khỏi phiếu.
+            đáp án/hướng dẫn đã loại khỏi phiếu
+            {stats.tags > 0 &&
+              `, đã tự động thêm tag [HOCMAI] cho ${stats.tags} câu chưa chuẩn hóa`}
+            .
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">

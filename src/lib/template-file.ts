@@ -140,33 +140,67 @@ export async function buildFromTemplate(
   }
 
   // 4) Rel GV + rel ảnh banner mới
-  let gvRelsXml = "";
-  const gvRelsEntry = gvZip.file("word/_rels/document.xml.rels");
-  if (gvRelsEntry) gvRelsXml = await gvRelsEntry.async("string");
-  let relsXml = gvRelsXml || "";
-  if (relsXml.includes("</Relationships>")) {
-    let add = "";
-    embedsRel.forEach((rel, rid) => {
-      add += `<Relationship Id="${rid}" Type="${rel.type}" Target="${rel.target}"/>`;
-    });
-    relsXml = relsXml.replace("</Relationships>", add + "</Relationships>");
-  } else {
-    // tạo mới
-    const NS = "http://schemas.openxmlformats.org/package/2006/relationships";
-    let body = "";
-    embedsRel.forEach((rel, rid) => {
-      body += `<Relationship Id="${rid}" Type="${rel.type}" Target="${rel.target}"/>`;
-    });
-    relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${NS}">${body}</Relationships>`;
-  }
+    let gvRelsXml = "";
+    const gvRelsEntry = gvZip.file("word/_rels/document.xml.rels");
+    if (gvRelsEntry) gvRelsXml = await gvRelsEntry.async("string");
+    let relsXml = gvRelsXml || "";
+    if (relsXml.includes("</Relationships>")) {
+      let add = "";
+      embedsRel.forEach((rel, rid) => {
+        add += `<Relationship Id="${rid}" Type="${rel.type}" Target="${rel.target}"/>`;
+      });
+      relsXml = relsXml.replace("</Relationships>", add + "</Relationships>");
+    } else {
+      // tạo mới
+      const NS = "http://schemas.openxmlformats.org/package/2006/relationships";
+      let body = "";
+      embedsRel.forEach((rel, rid) => {
+        body += `<Relationship Id="${rid}" Type="${rel.type}" Target="${rel.target}"/>`;
+      });
+      relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${NS}">${body}</Relationships>`;
+    }
 
-  // 5) document.xml: docHead + prefix + body GV + sectPr template + tail đóng
-    const documentXml =
-      skeleton.docHead +
-      skeleton.prefixXml +
-      gvBodyXml +
-      skeleton.sectPr +
-      skeleton.tailXml;
+    // 4b) REMAP header/footer rIds trong sectPr template → rIds của GV.
+        //     sectPr từ template trỏ rIds của TEMPLATE (vd rId61-66), nhưng zip output
+        //     giữ rels của GV (rId61-66 có thể là OLE/image). Word báo corrupt nếu
+        //     headerReference trỏ sang OLE — bug thực tế gặp với chính file GV.
+        //     Nếu GV KHÔNG có header/footer tương ứng → XÓA ref khỏi sectPr (tránh
+        //     trỏ rId không tồn tại → corrupt; gặp với file GV thiếu footer2/3).
+        let sectPr = skeleton.sectPr;
+            {
+              const gvRelMap = new Map<string, string>();
+              const gvRelRe = /Id="([^"]+)"[^>]*Type="([^"]+)"[^>]*Target="([^"]+)"/g;
+              let gm: RegExpExecArray | null;
+              while ((gm = gvRelRe.exec(gvRelsXml))) {
+                if (gm[2].endsWith("/header") || gm[2].endsWith("/footer")) {
+                  gvRelMap.set(gm[3], gm[1]); // target → rId GV
+                }
+              }
+              // Dùng replace callback (KHÔNG exec-loop + mutate chuỗi — làm lệch
+              // lastIndex và bỏ sót ref; đã từng dính).
+              sectPr = sectPr.replace(
+                /<w:(header|footer)Reference[^>]*r:id="([^"]+)"[^>]*\/>/g,
+                (full, _kind, tplRid) => {
+                  const tplRel = relMap.get(tplRid);
+                  if (!tplRel) return full;
+                  const tgt = tplRel.target; // vd "header1.xml"
+                  const gvRid = gvRelMap.get(tgt);
+                  if (gvRid && gvRid !== tplRid) {
+                    return full.replace(`r:id="${tplRid}"`, `r:id="${gvRid}"`);
+                  }
+                  if (!gvRid) return ""; // GV thiếu header/footer này → bỏ ref
+                  return full;
+                },
+              );
+            }
+
+  // 5) document.xml: docHead + prefix + body GV + sectPr template (đã remap) + tail đóng
+      const documentXml =
+        skeleton.docHead +
+        skeleton.prefixXml +
+        gvBodyXml +
+        sectPr +
+        skeleton.tailXml;
 
     return { documentXml, relsXml, extraMedia };
   }

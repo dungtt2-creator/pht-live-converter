@@ -21,9 +21,10 @@ export interface XNode {
   parentNode: XNode | null;
   ownerDocument: XDocument;
   appendChild(n: XNode): XNode;
-  removeChild(n: XNode): XNode;
-  insertBefore(n: XNode, ref: XNode | null): XNode;
-  cloneNode(deep?: boolean): XNode;
+    removeChild(n: XNode): XNode;
+    insertBefore(n: XNode, ref: XNode | null): XNode;
+    replaceChild(newChild: XNode, oldChild: XNode): XNode;
+    cloneNode(deep?: boolean): XNode;
 }
 
 export interface XElement extends XNode {

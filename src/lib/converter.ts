@@ -18,6 +18,7 @@ import { localName, childrenOf, isW, paragraphText, createWElement } from "./xml
 import type { XNode, XElement, XDocument } from "./xml";
 import type { DocBlock, Block } from "./model";
 import { applyBlanks, findBlankRegions } from "./blanker";
+import { addHocmaiTags } from "./tag-hocmai";
 import { getTemplate, type TemplateId } from "./template";
 
 export type OutputMode = "pht" | "live";
@@ -27,6 +28,8 @@ export interface ConvertResult {
   answersRemoved: number;
   guidelinesRemoved: number;
   blanksCreated: number;
+  /** Số tag [HOCMAI] tự động thêm cho câu chưa chuẩn hóa */
+  hocmaiTagsAdded: number;
   notes: string[];
 }
 
@@ -132,9 +135,9 @@ export function convertDom(
   useFileTemplate = false,
 ): ConvertResult {
   const notes: string[] = [];
-  const result: ConvertResult = {
-    blocks, answersRemoved: 0, guidelinesRemoved: 0, blanksCreated: 0, notes,
-  };
+    const result: ConvertResult = {
+      blocks, answersRemoved: 0, guidelinesRemoved: 0, blanksCreated: 0, hocmaiTagsAdded: 0, notes,
+    };
   const tpl = getTemplate(templateId);
   const idx = indexBody(body);
   if (idx.length !== blocks.length) {
@@ -152,8 +155,14 @@ export function convertDom(
   }
 
   // ===================== PHT =====================
-  if (mode === "pht") {
-    const { toRemove } = computeRemoveSet(blocks);
+    if (mode === "pht") {
+      // 0b) Chuẩn hóa: tự thêm tag [HOCMAI] cho câu chưa có (theo mẫu Bài 13)
+      result.hocmaiTagsAdded = addHocmaiTags(blocks, body, doc, tpl.color);
+      if (result.hocmaiTagsAdded > 0) {
+        notes.push(`Đã tự động thêm tag [HOCMAI] cho ${result.hocmaiTagsAdded} câu chưa chuẩn hóa.`);
+      }
+
+      const { toRemove } = computeRemoveSet(blocks);
     result.answersRemoved = removeBlocks(body, idx, toRemove);
     notes.push(`Đã xóa ${result.answersRemoved} block đáp án/hướng dẫn/bảng giải thích.`);
 
@@ -182,8 +191,14 @@ export function convertDom(
   }
 
   // ===================== LIVE =====================
-  if (mode === "live") {
-    // ----- 1) Template kỳ thi: trang NGANG + margin đúng mẫu -----
+    if (mode === "live") {
+      // ----- 0) Chuẩn hóa: tự thêm tag [HOCMAI] (chạy trên DOM — trước khi xóa) -----
+      result.hocmaiTagsAdded = addHocmaiTags(blocks, body, doc, tpl.color);
+      if (result.hocmaiTagsAdded > 0) {
+        notes.push(`Đã tự động thêm tag [HOCMAI] cho ${result.hocmaiTagsAdded} câu chưa chuẩn hóa.`);
+      }
+
+      // ----- 1) Template kỳ thi: trang NGANG + margin đúng mẫu -----
     const sectPr = childrenOf(body).find((c) => isW(c, "sectPr"));
     if (sectPr) {
       const pgSz = childrenOf(sectPr).find((c) => isW(c, "pgSz"));
