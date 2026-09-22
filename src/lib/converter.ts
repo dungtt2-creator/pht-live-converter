@@ -34,7 +34,7 @@ export interface ConvertResult {
   notes: string[];
 }
 
-const QNUM = /^[Cc]âu\s*(\d+)\s*[.:]/;
+const QNUM = /^[Cc]âu\s*(\d{1,3})\s*(?:[:.]|\s*\[HOCMAI\]|\s*$)/;
 const NEW_CONTEXT =
   /^(Sử dụng|Dựa vào|Đọc|Xem xét|Căn cứ|Kết hợp)\s+(thông tin|đoạn|bài|hình|bảng|đề|đồ thị)/i;
 const PRESERVED_CONTEXT =
@@ -44,6 +44,16 @@ const ANSWER_WITH_CHOICES = /^(Đáp án|Đ\/A)\s*[:.]?\s*[A-D]\./;
 /** "Đáp án. A. 1,3; B. 2,4; C. 5" — đáp án câu NỐI CỘT: mẫu GIỮ + blank số thành ____ */
 const FILL_JOIN_ANSWER = /^Đáp\s?án\s*[:.]\s*A\.[^B]*;(?:\s*)B\./i;
 const FILL_BLANK_ONLY = /_{2,}/;
+/**
+ * Điểm bắt đầu vùng ĐÁP ÁN/giải CUỐI FILE (đề thi thật TN THPT/HSA/QDA
+ * có "ĐÁP ÁN THAM KHẢO" + bảng đáp án + "LỜI GIẢI THAM KHẢO" dưới cùng):
+ * viết HOA toàn bộ + theo sau là chữ HOA → xóa TỚI HẾT FILE (kể cả bảng/heading/câu).
+ * Không khớp "Đáp án: A." (chữ thường, mẫu điền câu nối cột).
+ */
+const ANSWER_KEY_START =
+  /^(?:ĐÁP ÁN\s+[A-ZÀ-Ỹ]|BẢNG ĐÁP ÁN|LỜI GIẢI\s+[A-ZÀ-Ỹ]|HƯỚNG DẪN GIẢI\s+[A-ZÀ-Ỹ]|ĐÁP ÁN ĐỀ)/;
+/** Stimulus dạng TN THPT: "Nội dung câu 1 và 2: ..." — giữ ngoài khung + ngắt nhóm */
+const CONTEXT_BODY_RE = /^Nội dung\s+(?:câu|các\s+câu)/i;
 
 function hasMath(p: XElement): boolean {
   const walk = (n: XNode): boolean => {
@@ -75,9 +85,20 @@ function computeRemoveSet(blocks: DocBlock[]): { toRemove: Set<number>; joinAnsw
   const toRemove = new Set<number>();
   const joinAnswerBlocks: number[] = [];
   let inG = false; // đang duyệt khối đáp án/hướng dẫn
+  let inAnswerKey = false; // vùng ĐÁP ÁN/giải CUỐI FILE (xóa tới hết)
 
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i];
+    // Vùng đáp án/giải tham khảo cuối file (đề thi thật TN THPT/HSA/QDA):
+    // từ dòng "ĐÁP ÁN THAM KHẢO"/"BẢNG ĐÁP ÁN"/"LỜI GIẢI..." → xóa TẤT CẢ
+    // (kể cả bảng đáp án + heading + "Câu N. Chọn X" giả) tới hết tài liệu.
+    if (b.kind !== "table" && ANSWER_KEY_START.test((b as Block).text.trim())) {
+      inAnswerKey = true;
+    }
+    if (inAnswerKey) {
+      toRemove.add(i);
+      continue;
+    }
     if (b.kind === "table") {
       const t = b as unknown as { rows: { text: string }[][] };
       const header = (t.rows[0] || []).map((c) => c.text).join(" ");

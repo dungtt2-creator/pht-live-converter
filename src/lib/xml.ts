@@ -126,20 +126,28 @@ export function childrenOf(node: XNode | null): XElement[] {
   return out;
 }
 
-/** Nối text của paragraph: w:t giữ nguyên, w:tab → \t, w:br|w:cr → \n */
+/** Nối text của paragraph: w:t giữ nguyên, w:tab → \t, w:br|w:cr → \n.
+ * CHỈ cộng text node nằm trong w:t (hoặc text "trần" con trực tiếp của w:r —
+ * vài generator WPS/Google đặt text thẳng trong run).
+ * KHÔNG cộng text bên trong w:drawing (wp:posOffset/simplePos/pctWidth...)
+ * hay w:object (OLE) — nếu không chuỗi số định vị ảnh dính vào đầu câu
+ * phá classification (bug HSA 2026-09: "40849551016000Câu 1 ..."). */
 export function paragraphText(p: XElement): string {
   let out = "";
-  const walk = (n: XNode) => {
+  const walk = (n: XNode, parentName: string, inT: boolean) => {
     for (let i = 0; i < n.childNodes.length; i++) {
       const c = n.childNodes[i];
       const ln = localName(c);
-      if (c.nodeType === 3) out += c.nodeValue ?? "";
-      else if (ln === "tab") out += "\t";
+      if (c.nodeType === 3) {
+        if (inT || parentName === "r") out += c.nodeValue ?? "";
+        continue;
+      }
+      if (ln === "tab") out += "\t";
       else if (ln === "br" || ln === "cr") out += "\n";
-      else walk(c);
+      else walk(c, ln, ln === "t");
     }
   };
-  walk(p);
+  walk(p, "", false);
   return out;
 }
 

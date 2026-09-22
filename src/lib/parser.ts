@@ -19,7 +19,7 @@ export interface ParsedXml {
   doc: XDocument;
 }
 
-const QNUM = /^[Cc]âu\s*(\d+)\s*[.:]/;
+const QNUM = /^[Cc]âu\s*(\d{1,3})\s*(?:[:.]|\s*\[HOCMAI\]|\s*$)/;
 
 function readParagraph(p: XElement, idx: number): Block {
   const text = paragraphText(p);
