@@ -20,6 +20,7 @@ import type { DocBlock, Block } from "./model";
 import { applyBlanks, findBlankRegions } from "./blanker";
 import { addHocmaiTags } from "./tag-hocmai";
 import { getTemplate, type TemplateId } from "./template";
+import { fixHeadingKeepNext, cleanupSpacers } from "./pagination";
 
 export type OutputMode = "pht" | "live";
 
@@ -189,42 +190,63 @@ export function convertDom(
   }
 
   // ===================== PHT =====================
-    if (mode === "pht") {
-      // 0b) Chuẩn hóa: tự thêm tag [HOCMAI] cho câu chưa có (theo mẫu Bài 13)
-      result.hocmaiTagsAdded = addHocmaiTags(blocks, body, doc, tpl.color);
-      if (result.hocmaiTagsAdded > 0) {
-        notes.push(`Đã tự động thêm tag [HOCMAI] cho ${result.hocmaiTagsAdded} câu chưa chuẩn hóa.`);
+      if (mode === "pht") {
+        // 0b) Chuẩn hóa: tự thêm tag [HOCMAI] cho câu chưa có (theo mẫu Bài 13)
+        result.hocmaiTagsAdded = addHocmaiTags(blocks, body, doc, tpl.color);
+        if (result.hocmaiTagsAdded > 0) {
+          notes.push(`Đã tự động thêm tag [HOCMAI] cho ${result.hocmaiTagsAdded} câu chưa chuẩn hóa.`);
+        }
+
+        // 0c) Xóa HIGHLIGHT đánh dấu đáp án đúng (yêu cầu: đưa phương án về đồng nhất,
+        //     giống phương án không được đánh dấu — không lấy màu highlight cho tag)
+        const hlNodesPht: XElement[] = [];
+        const walkHlPht = (n: XNode) => {
+          for (let i = 0; i < n.childNodes.length; i++) {
+            const c = n.childNodes[i];
+            if (localName(c) === "highlight") hlNodesPht.push(c as XElement);
+            walkHlPht(c);
+          }
+        };
+        walkHlPht(body);
+        for (const hl of hlNodesPht) hl.parentNode!.removeChild(hl);
+
+        const { toRemove, joinAnswerBlocks } = computeRemoveSet(blocks);
+            result.answersRemoved = removeBlocks(body, idx, toRemove);
+            const joinBlanks = blankJoinAnswers(body, idx, joinAnswerBlocks);
+            if (joinBlanks > 0) notes.push(`Đã blank ${joinBlanks} dòng đáp án nối cột (giữ mẫu điền).`);
+            notes.push(`Đã xóa ${result.answersRemoved} block đáp án/hướng dẫn/bảng giải thích + ${hlNodesPht.length} highlight đáp án.`);
+
+      // Blank hóa lý thuyết — trong MỌI vùng kiến thức (heading mở vùng mới),
+      // chỉ blank lý thuyết TRƯỚC câu hỏi đầu của vùng (khớp PHT mẫu).
+      let blanks = 0;
+      let questionSeenInSection = false;
+      blocks.forEach((b, i) => {
+        if (b.kind === "table" || i >= idx.length || idx[i].isTable) return;
+        const blk = b as Block;
+        if (blk.kind === "heading") questionSeenInSection = false;
+        if (blk.kind === "question") questionSeenInSection = true;
+        if (questionSeenInSection || blk.kind !== "theory") return;
+        const p = idx[i].el as XElement;
+        const raw = paragraphText(p); // RAW — giữ tab đầu
+        const txt = raw.trim();
+        if (!txt || txt.length > 600) return;
+        if (hasMath(p)) return;
+        const offset = raw.length - raw.trimStart().length;
+        const regions = findBlankRegions(txt).map(([s, e]) => [s + offset, e + offset] as [number, number]);
+        if (!regions.length) return;
+        blanks += applyBlanks(p, doc, regions);
+      });
+      result.blanksCreated = blanks;
+      notes.push(`Đã tạo ${blanks} chỗ trống kiến thức.`);
+
+      // ----- 5) Phân trang: heading đi cùng đoạn đầu + dọn khoảng trống phát sinh -----
+      const hFixed = fixHeadingKeepNext(blocks, idx, doc);
+      if (hFixed > 0) notes.push(`Đã bật keep-with-next + widow-control cho ${hFixed} heading (giữ heading với đoạn đầu tiên).`);
+      const cleaned = cleanupSpacers(blocks, idx, toRemove, doc);
+      if (cleaned.emptyRemoved > 0 || cleaned.pageBreaksRemoved > 0) {
+        notes.push(`Đã dọn ${cleaned.emptyRemoved} paragraph rỗng thừa + ${cleaned.pageBreaksRemoved} page break phát sinh.`);
       }
-
-      const { toRemove, joinAnswerBlocks } = computeRemoveSet(blocks);
-          result.answersRemoved = removeBlocks(body, idx, toRemove);
-          const joinBlanks = blankJoinAnswers(body, idx, joinAnswerBlocks);
-          if (joinBlanks > 0) notes.push(`Đã blank ${joinBlanks} dòng đáp án nối cột (giữ mẫu điền).`);
-          notes.push(`Đã xóa ${result.answersRemoved} block đáp án/hướng dẫn/bảng giải thích.`);
-
-    // Blank hóa lý thuyết — trong MỌI vùng kiến thức (heading mở vùng mới),
-    // chỉ blank lý thuyết TRƯỚC câu hỏi đầu của vùng (khớp PHT mẫu).
-    let blanks = 0;
-    let questionSeenInSection = false;
-    blocks.forEach((b, i) => {
-      if (b.kind === "table" || i >= idx.length || idx[i].isTable) return;
-      const blk = b as Block;
-      if (blk.kind === "heading") questionSeenInSection = false;
-      if (blk.kind === "question") questionSeenInSection = true;
-      if (questionSeenInSection || blk.kind !== "theory") return;
-      const p = idx[i].el as XElement;
-      const raw = paragraphText(p); // RAW — giữ tab đầu
-      const txt = raw.trim();
-      if (!txt || txt.length > 600) return;
-      if (hasMath(p)) return;
-      const offset = raw.length - raw.trimStart().length;
-      const regions = findBlankRegions(txt).map(([s, e]) => [s + offset, e + offset] as [number, number]);
-      if (!regions.length) return;
-      blanks += applyBlanks(p, doc, regions);
-    });
-    result.blanksCreated = blanks;
-    notes.push(`Đã tạo ${blanks} chỗ trống kiến thức.`);
-  }
+    }
 
   // ===================== LIVE =====================
     if (mode === "live") {
@@ -280,11 +302,6 @@ export function convertDom(
         if (joinBlanks > 0) notes.push(`Đã blank ${joinBlanks} dòng đáp án nối cột (giữ mẫu điền).`);
 
     // ----- 4) Gom câu hỏi vào BẢNG 2 cột viền WAVE XANH (đúng mẫu Live Bài 13) -----
-        //    Mẫu: khung = bảng 2 cột (9876/5821 dxa), viền wave màu 00B0F0 sz=12,
-        //    cột trái = câu hỏi (+ stimulus "Sử dụng thông tin..." ngay trước câu đầu),
-        //    cột phải = dòng chấm "……" Montserrat italic 10pt (~7 dòng/câu) để GV chữa bài.
-        //    Nhóm = câu hỏi liên tiếp + phương án/theory bám sau; BẢNG (ngữ liệu, đồ thị,
-        //    bảng số liệu) KHÔNG bọc — ngắt nhóm và giữ nguyên trạng.
         const WAVE = "00B0F0";
         const groups: Array<{ elems: XElement[]; nQuestions: number }> = [];
         for (let i = 0; i < blocks.length; i++) {
@@ -331,9 +348,19 @@ export function convertDom(
         }
 
         notes.push(
-          `Live: template ngang + ${hlNodes.length} highlight đã bỏ + ${result.answersRemoved} block đáp án/hướng dẫn đã xóa + ${groups.length} khung câu hỏi viền wave (${groups.reduce((s, g) => s + g.nQuestions, 0)} câu, dòng chấm chữa bài).`,
-        );
-  }
+                  `Live: template ngang + ${hlNodes.length} highlight đã bỏ + ${result.answersRemoved} block đáp án/hướng dẫn đã xóa + ${groups.length} khung câu hỏi viền wave (${groups.reduce((s, g) => s + g.nQuestions, 0)} câu, dòng chấm chữa bài).`,
+                );
+
+                // ----- 5) Phân trang: heading đi cùng đoạn đầu + dọn khoảng trống phát sinh -----
+                        // Live: strip bảng tiêu đề 1-cell → paragraph (keepNext không xuyên table,
+                        // heading trong bảng vẫn rơi cuối trang — khớp MAU dùng paragraph thường).
+                        const hFixedL = fixHeadingKeepNext(blocks, idx, doc, true);
+                        if (hFixedL > 0) notes.push(`Đã chuẩn hóa ${hFixedL} heading (bảng tiêu đề → paragraph + keep-with-next + widow-control).`);
+                const cleanedL = cleanupSpacers(blocks, idx, toRemove, doc);
+                if (cleanedL.emptyRemoved > 0 || cleanedL.pageBreaksRemoved > 0) {
+                  notes.push(`Đã dọn ${cleanedL.emptyRemoved} paragraph rỗng thừa + ${cleanedL.pageBreaksRemoved} page break phát sinh.`);
+                }
+          }
 
   return result;
 }

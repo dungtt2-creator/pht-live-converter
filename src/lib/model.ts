@@ -66,7 +66,11 @@ export function classifyParagraph(text: string, idx: number): BlockKind {
     if (/_{2,}/.test(t)) return "text";
     return "answer";
   }
-  if (/^(Hướng\s?dẫn|Lời\s?giải)\s*[:.)·]/i.test(t)) return "guideline";
+  // Nhãn lời giải/hướng dẫn — mở rộng: Hướng dẫn, Hướng dẫn giải, Lời giải, Giải, Phân tích.
+  // "Giải thích..." KHÔNG phải nhãn lời giải (thường là yêu cầu câu hỏi) → loại trừ.
+  // Chấp nhận cả nhãn KHÔNG dấu theo sau ("Hướng dẫn" đứng riêng 1 dòng) — dạng thường
+  // gặp trong file GV; thức ăn cho computeRemoveSet: guideline mở khối xóa tới câu kế.
+  if (/^(Hướng\s?dẫn(?:\s*giải)?|Lời\s?giải|Bài\s?giải|Giải(?!\s*thích)|Phân\s?tích)(\s*[:.)·]|\s*$)/i.test(t)) return "guideline";
   if (/^Sử dụng thông tin|^Dựa vào thông tin|^Cho đoạn trích|^Đọc đoạn văn/.test(t)) return "instruction";
   return "theory";
 }
