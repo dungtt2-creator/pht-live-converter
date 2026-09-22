@@ -34,7 +34,7 @@ export interface ConvertResult {
   notes: string[];
 }
 
-const QNUM = /^[Cc]âu\s*(\d{1,3})\s*(?:[:.]|\s*\[HOCMAI\]|\s*$)/;
+const QNUM = /^[Cc]âu\s*(\d{1,3})\s*(?:[:.]|\s*\[(?:HOCMAI|Trắc nghiệm)[^\]]*\]|\s*$)/;
 const NEW_CONTEXT =
   /^(Sử dụng|Dựa vào|Đọc|Xem xét|Căn cứ|Kết hợp)\s+(thông tin|đoạn|bài|hình|bảng|đề|đồ thị)/i;
 const PRESERVED_CONTEXT =

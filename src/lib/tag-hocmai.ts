@@ -18,8 +18,8 @@ import { localName, childrenOf, isW, createWElement, paragraphText } from "./xml
 import type { XNode, XElement, XDocument } from "./xml";
 import type { DocBlock, Block } from "./model";
 
-/** Nhãn "Câu N." / "Câu N:" — tìm KHÔNG anchor đầu (paragraph có tab đầu) */
-const LABEL_RE = /Câu\s*(\d{1,3})\s*[:.]/;
+/** Nhãn "Câu N." / "Câu N:" / "Câu N [HOCMAI]" — tìm KHÔNG anchor đầu (paragraph có tab đầu) */
+const LABEL_RE = /Câu\s*(\d{1,3})\s*(?:[:.]|\s*\[(?:HOCMAI|Trắc nghiệm)[^\]]*\]|\s*$)/;
 
 /** Đã có tag ngay sau nhãn? (chấp nhận khoảng trắng giữa) */
 const HAS_TAG_RE = /^[\s\u00A0]*\[HOCMAI\]/;
@@ -222,7 +222,12 @@ function tagOneParagraph(p: XElement, doc: XDocument, canonical: XElement): numb
   const raw = paraText(p);
   const m = LABEL_RE.exec(raw);
   if (!m) return 0;
+  // Điểm chèn tag: ngay SAU SỐ (trước "[Trắc nghiệm...]" nếu có) — đúng chuẩn
+  // mẫu Bài 13/HSA: "Câu 1. [HOCMAI] ..." / "Câu 1 [HOCMAI] – (ID:...)".
+  // Nếu nhãn là "Câu N [Trắc nghiệm ...]" → chèn [HOCMAI] TRƯỚC "[Trắc".
   let end = m.index + m[0].length;
+  const trnIdx = m[0].indexOf("[Trắc");
+  if (trnIdx >= 0) end = m.index + trnIdx;
 
   // Tìm run chứa [HOCMAI] ngay sau nhãn (trong khoảng whitespace 40 ký tự)
   const after = raw.slice(end, end + 60);

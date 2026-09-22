@@ -102,6 +102,7 @@ export async function buildFromTemplate(
   gvBodyXml: string,
   gvZip: JSZip,
 ): Promise<MergeResult> {
+  const embedsRel = new Map<string, { type: string; target: string }>();
   // 1) Tìm r:embed trong prefix (ảnh banner template)
   const embeds = new Set<string>();
   const embedRe = /r:embed="([^"]+)"/g;
@@ -203,6 +204,4 @@ export async function buildFromTemplate(
         skeleton.tailXml;
 
     return { documentXml, relsXml, extraMedia };
-  }
-
-  const embedsRel = new Map<string, { type: string; target: string }>();
+      }

@@ -50,7 +50,11 @@ export type ParsedDoc = DocBlock[];
 const ROMAN = /^(I|II|III|IV|V|VI|VII|VIII|IX|X|XI|XII)\b/;
 /** Nhãn câu: "Câu N.", "Câu N:", HSA "Câu N [HOCMAI]", "Câu 33 [HOCMAI]." 
  * (HSA format: "Câu 33 [HOCMAI]. ..." — dấu chấm SAU tag, không sau số). */
-const QNUM = /^[Cc]âu\s*(\d{1,3})\s*(?:[:.]|\s*\[HOCMAI\]|\s*$)/;
+/** Nhãn câu: "Câu N.", "Câu N:", HSA "Câu N [HOCMAI]", "Câu 33 [HOCMAI]."
+ * (HSA format: "Câu 33 [HOCMAI]. ..." — dấu chấm SAU tag, không sau số).
+ * TSA Đọc hiểu: "Câu 1 [Trắc nghiệm 1 phương án]" / "Câu 2 [Trắc nghiệm nhiều phương án]".
+ * "Câu N:" thường không được dùng với dấu chấm sau → giữ pattern lỏng. */
+const QNUM = /^[Cc]âu\s*(\d{1,3})\s*(?:[:.]|\s*\[(?:HOCMAI|Trắc nghiệm)[^\]]*\]|\s*$)/;
 
 export function classifyParagraph(text: string, idx: number): BlockKind {
   const t = text.trim();
