@@ -40,6 +40,8 @@ const PRESERVED_CONTEXT =
   /^Bài đọc|^Đoạn văn sau|^Thông tin sau|^DẶN DÒ|^Dặn dò|^Nguồn\s*[:：]|^Trích\s*(SGK|SBT)/;
 /** "Đáp án: A. ____" dạng mẫu điền — chỉ giữ khi có gạch chân */
 const ANSWER_WITH_CHOICES = /^(Đáp án|Đ\/A)\s*[:.]?\s*[A-D]\./;
+/** "Đáp án. A. 1,3; B. 2,4; C. 5" — đáp án câu NỐI CỘT: mẫu GIỮ + blank số thành ____ */
+const FILL_JOIN_ANSWER = /^Đáp\s?án\s*[:.]\s*A\.[^B]*;(?:\s*)B\./i;
 const FILL_BLANK_ONLY = /_{2,}/;
 
 function hasMath(p: XElement): boolean {
@@ -68,8 +70,9 @@ function indexBody(body: XElement): Array<{ el: XElement; isTable: boolean }> {
  * Tính tập block cần XÓA (đáp án/hướng dẫn giải) — dùng chung PHT & Live.
  * Trả về Set index block.
  */
-function computeRemoveSet(blocks: DocBlock[]): { toRemove: Set<number> } {
+function computeRemoveSet(blocks: DocBlock[]): { toRemove: Set<number>; joinAnswerBlocks: number[] } {
   const toRemove = new Set<number>();
+  const joinAnswerBlocks: number[] = [];
   let inG = false; // đang duyệt khối đáp án/hướng dẫn
 
   for (let i = 0; i < blocks.length; i++) {
@@ -104,13 +107,19 @@ function computeRemoveSet(blocks: DocBlock[]): { toRemove: Set<number> } {
       continue;
     }
     if (blk.kind === "guideline" || blk.kind === "answer") {
-      if (ANSWER_WITH_CHOICES.test(txt) && FILL_BLANK_ONLY.test(txt)) continue; // mẫu điền
-      toRemove.add(i);
-      inG = true;
-    }
+          if (ANSWER_WITH_CHOICES.test(txt) && FILL_BLANK_ONLY.test(txt)) continue; // mẫu điền
+          if (FILL_JOIN_ANSWER.test(txt)) {
+            // Đáp án câu nối cột: GIỮ + blank số thành ____ (đúng mẫu Live Bài 13)
+            // Không mở inG — khối "Hướng dẫn." đứng riêng sau sẽ tự mở.
+            joinAnswerBlocks.push(i);
+            continue;
+          }
+          toRemove.add(i);
+          inG = true;
+        }
   }
-  return { toRemove };
-}
+  return { toRemove, joinAnswerBlocks };
+  }
 
 /** Xóa các block đã đánh dấu khỏi body */
 function removeBlocks(body: XElement, idx: Array<{ el: XElement; isTable: boolean }>, toRemove: Set<number>): number {
@@ -122,6 +131,31 @@ function removeBlocks(body: XElement, idx: Array<{ el: XElement; isTable: boolea
     }
   }
   return n;
+}
+
+/**
+ * Blank dòng đáp án câu nối cột ("Đáp án. A. 1,3;B. 2,4;C. 5" → "Đáp án: A. ____; ____ B. ____; ____; C. ____").
+ * Lặp trên RAW paragraphText (giữ tab đầu) — thay mọi SỐ bằng ____, giữ nhãn A./B./C. và dấu ;.
+ */
+function blankJoinAnswers(
+  body: XElement,
+  idx: Array<{ el: XElement; isTable: boolean }>,
+  targets: number[],
+): number {
+  if (!targets.length) return 0;
+  const NUM_RE = /[0-9][0-9.,]*/g;
+  const visit = (n: XNode): void => {
+    if (localName(n) === "t") {
+      const tn = n as unknown as { textContent: string | null; nodeValue: string | null };
+      const cur = tn.textContent ?? tn.nodeValue ?? "";
+      if (NUM_RE.test(cur)) tn.textContent = cur.replace(NUM_RE, "____");
+    }
+    for (let i = 0; i < n.childNodes.length; i++) visit(n.childNodes[i]);
+  };
+  for (const i of targets) {
+    if (i < idx.length && !idx[i].isTable) visit(idx[i].el as XNode);
+  }
+  return targets.length;
 }
 
 /**
@@ -162,9 +196,11 @@ export function convertDom(
         notes.push(`Đã tự động thêm tag [HOCMAI] cho ${result.hocmaiTagsAdded} câu chưa chuẩn hóa.`);
       }
 
-      const { toRemove } = computeRemoveSet(blocks);
-    result.answersRemoved = removeBlocks(body, idx, toRemove);
-    notes.push(`Đã xóa ${result.answersRemoved} block đáp án/hướng dẫn/bảng giải thích.`);
+      const { toRemove, joinAnswerBlocks } = computeRemoveSet(blocks);
+          result.answersRemoved = removeBlocks(body, idx, toRemove);
+          const joinBlanks = blankJoinAnswers(body, idx, joinAnswerBlocks);
+          if (joinBlanks > 0) notes.push(`Đã blank ${joinBlanks} dòng đáp án nối cột (giữ mẫu điền).`);
+          notes.push(`Đã xóa ${result.answersRemoved} block đáp án/hướng dẫn/bảng giải thích.`);
 
     // Blank hóa lý thuyết — trong MỌI vùng kiến thức (heading mở vùng mới),
     // chỉ blank lý thuyết TRƯỚC câu hỏi đầu của vùng (khớp PHT mẫu).
@@ -238,49 +274,65 @@ export function convertDom(
     for (const hl of hlNodes) hl.parentNode!.removeChild(hl);
 
     // ----- 3) Xóa đáp án + hướng dẫn giải -----
-    const { toRemove } = computeRemoveSet(blocks);
-    result.answersRemoved = removeBlocks(body, idx, toRemove);
+        const { toRemove, joinAnswerBlocks } = computeRemoveSet(blocks);
+        result.answersRemoved = removeBlocks(body, idx, toRemove);
+        const joinBlanks = blankJoinAnswers(body, idx, joinAnswerBlocks);
+        if (joinBlanks > 0) notes.push(`Đã blank ${joinBlanks} dòng đáp án nối cột (giữ mẫu điền).`);
 
-    // ----- 4) Gom câu hỏi vào BẢNG 2 cột viền MÀU TEMPLATE (form Live) -----
-        //    Nhóm = câu hỏi + phương án/theory ngắn liền sau, đến câu kế/heading/instruction/table.
-        const RED = tpl.color;
-    const groups: Array<{ elems: XElement[] }> = [];
-    for (let i = 0; i < blocks.length; i++) {
-      const b = blocks[i];
-      if (b.kind === "table") continue;
-      if ((b as Block).kind !== "question") continue;
-      const els: XElement[] = [];
-      let j = i;
-      while (j < blocks.length) {
-        const bb = blocks[j];
-        if (bb.kind === "table") break;
-        const bblk = bb as Block;
-        if (j > i && (bblk.kind === "question" || bblk.kind === "heading" || bblk.kind === "instruction")) break;
-        if (j < idx.length && !idx[j].isTable) {
-          const el = idx[j].el as XElement;
-          if (el.parentNode) els.push(el); // bỏ phần tử đã bị xóa (trong khối giải)
+    // ----- 4) Gom câu hỏi vào BẢNG 2 cột viền WAVE XANH (đúng mẫu Live Bài 13) -----
+        //    Mẫu: khung = bảng 2 cột (9876/5821 dxa), viền wave màu 00B0F0 sz=12,
+        //    cột trái = câu hỏi (+ stimulus "Sử dụng thông tin..." ngay trước câu đầu),
+        //    cột phải = dòng chấm "……" Montserrat italic 10pt (~7 dòng/câu) để GV chữa bài.
+        //    Nhóm = câu hỏi liên tiếp + phương án/theory bám sau; BẢNG (ngữ liệu, đồ thị,
+        //    bảng số liệu) KHÔNG bọc — ngắt nhóm và giữ nguyên trạng.
+        const WAVE = "00B0F0";
+        const groups: Array<{ elems: XElement[]; nQuestions: number }> = [];
+        for (let i = 0; i < blocks.length; i++) {
+          const b = blocks[i];
+          if (b.kind === "table" || (b as Block).kind !== "question") continue;
+          const els: XElement[] = [];
+
+                    // Mẫu Bài 13: stimulus "Sử dụng thông tin..." GIỮ NGUYÊN ngoài khung
+                    // (paragraph thường trước khung). Gom tối đa 3 câu hỏi liên tiếp/khung —
+                    // mẫu xen 2-3 câu theo dung lượng nội dung, 3 là cân bằng đẹp.
+
+                    let j = i;
+                          let nQ = 0;
+                          while (j < blocks.length) {
+                            const bb = blocks[j];
+                            if (bb.kind === "table") break; // bảng ngữ liệu: ngắt nhóm, để nguyên ngoài khung
+                            const bblk = bb as Block;
+                            if (j > i && (bblk.kind === "heading" || bblk.kind === "instruction")) break;
+                            if (bblk.kind === "question") {
+                              if (nQ >= 3) break; // mẫu gom 2-3 câu liên tiếp/khung
+                              nQ++;
+                            }
+                  if (j < idx.length && !idx[j].isTable) {
+                    const el = idx[j].el as XElement;
+                    if (el.parentNode) els.push(el); // bỏ phần tử đã bị xóa (trong khối giải)
+                  }
+                  j++;
+                }
+          if (els.length) groups.push({ elems: els, nQuestions: nQ });
+          i = j - 1;
         }
-        j++;
-      }
-      if (els.length) groups.push({ elems: els });
-      i = j - 1;
-    }
 
-    // Xây bảng 1x2 và DI CHUYỂN paragraph gốc vào cột trái
-    for (const g of groups) {
-      const tbl = buildQuestionTable(doc, RED);
-      const first = g.elems[0];
-      first.parentNode!.insertBefore(tbl, first);
-      for (const el of g.elems) el.parentNode!.removeChild(el);
-      const leftCell = findLeftCell(tbl);
-      if (leftCell) {
-        for (const el of g.elems) leftCell.appendChild(el);
-      }
-    }
+        // Xây bảng wave 1x2 và DI CHUYỂN paragraph gốc vào cột trái; cột phải = dòng chấm
+        for (const g of groups) {
+          const nDots = Math.max(6, 7 * g.nQuestions);
+          const tbl = buildQuestionTable(doc, WAVE, nDots);
+          const first = g.elems[0];
+          first.parentNode!.insertBefore(tbl, first);
+          for (const el of g.elems) el.parentNode!.removeChild(el);
+          const leftCell = findLeftCell(tbl);
+          if (leftCell) {
+            for (const el of g.elems) leftCell.appendChild(el);
+          }
+        }
 
-    notes.push(
-      `Live: template ngang + ${hlNodes.length} highlight đã bỏ + ${result.answersRemoved} block đáp án/hướng dẫn đã xóa + ${groups.length} bảng câu hỏi có dòng kẻ.`,
-    );
+        notes.push(
+          `Live: template ngang + ${hlNodes.length} highlight đã bỏ + ${result.answersRemoved} block đáp án/hướng dẫn đã xóa + ${groups.length} khung câu hỏi viền wave (${groups.reduce((s, g) => s + g.nQuestions, 0)} câu, dòng chấm chữa bài).`,
+        );
   }
 
   return result;
@@ -298,31 +350,44 @@ function findLeftCell(tbl: XElement): XElement | null {
   return null;
 }
 
-/** Tạo bảng 1x2 viền đỏ: cột trái chứa câu hỏi, cột phải chứa dòng kẻ viết */
-function buildQuestionTable(doc: XDocument, red: string): XElement {
+/**
+ * Tạo bảng 2 cột viền WAVE xanh (đúng mẫu Live Bài 13):
+ * cột trái chứa câu hỏi (9876 dxa), cột phải chứa nDots dòng chấm để GV chữa bài (5821 dxa).
+ * Viền wave màu 00B0F0 sz=12; rPr dòng chấm = Montserrat italic 10pt màu 00B0F0.
+ */
+function buildQuestionTable(doc: XDocument, wave: string, nDots: number): XElement {
   const tbl = createW(doc, "tbl");
   const tblPr = createW(doc, "tblPr");
+  const tblStyle = createW(doc, "tblStyle");
+  tblStyle.setAttribute("w:val", "TableGrid");
+  tblPr.appendChild(tblStyle);
   const tblW = createW(doc, "tblW");
-  tblW.setAttribute("w:w", "0");
-  tblW.setAttribute("w:type", "auto");
+  tblW.setAttribute("w:w", "15697");
+  tblW.setAttribute("w:type", "dxa");
   tblPr.appendChild(tblW);
-  const jc = createW(doc, "jc");
-  jc.setAttribute("w:val", "center");
-  tblPr.appendChild(jc);
   const borders = createW(doc, "tblBorders");
   for (const side of ["top", "left", "bottom", "right", "insideH", "insideV"]) {
     const b = createW(doc, side);
-    b.setAttribute("w:val", "single");
-    b.setAttribute("w:sz", "4");
+    b.setAttribute("w:val", "wave");
+    b.setAttribute("w:sz", "12");
     b.setAttribute("w:space", "0");
-    b.setAttribute("w:color", red);
+    b.setAttribute("w:color", wave);
     borders.appendChild(b);
   }
   tblPr.appendChild(borders);
+  const tblLook = createW(doc, "tblLook");
+  tblLook.setAttribute("w:val", "04A0");
+  tblLook.setAttribute("w:firstRow", "1");
+  tblLook.setAttribute("w:lastRow", "0");
+  tblLook.setAttribute("w:firstColumn", "1");
+  tblLook.setAttribute("w:lastColumn", "0");
+  tblLook.setAttribute("w:noHBand", "0");
+  tblLook.setAttribute("w:noVBand", "1");
+  tblPr.appendChild(tblLook);
   tbl.appendChild(tblPr);
 
   const grid = createW(doc, "tblGrid");
-  for (const w of [9000, 6000]) {
+  for (const w of [9876, 5821]) {
     const gc = createW(doc, "gridCol");
     gc.setAttribute("w:w", String(w));
     grid.appendChild(gc);
@@ -334,46 +399,76 @@ function buildQuestionTable(doc: XDocument, red: string): XElement {
   const tcL = createW(doc, "tc");
   const tcPrL = createW(doc, "tcPr");
   const tcWL = createW(doc, "tcW");
-  tcWL.setAttribute("w:w", "9000");
+  tcWL.setAttribute("w:w", "9876");
   tcWL.setAttribute("w:type", "dxa");
   tcPrL.appendChild(tcWL);
   tcL.appendChild(tcPrL);
   tcL.appendChild(createW(doc, "p")); // paragraph đệm để ô hợp lệ
   tr.appendChild(tcL);
 
-  // ô phải — dòng kẻ để GV viết chữa bài
+  // ô phải — dòng chấm Montserrat italic 10pt màu wave (GV viết chữa bài)
   const tcR = createW(doc, "tc");
   const tcPrR = createW(doc, "tcPr");
   const tcWR = createW(doc, "tcW");
-  tcWR.setAttribute("w:w", "6000");
+  tcWR.setAttribute("w:w", "5821");
   tcWR.setAttribute("w:type", "dxa");
   tcPrR.appendChild(tcWR);
   tcR.appendChild(tcPrR);
-  tcR.appendChild(makeUnderlinePara(doc, 70));
-  tcR.appendChild(makeUnderlinePara(doc, 70));
+  for (let k = 0; k < nDots; k++) tcR.appendChild(makeDotsPara(doc, wave));
   tr.appendChild(tcR);
 
   tbl.appendChild(tr);
   return tbl;
 }
 
-/** Paragraph dòng kẻ: underline spaces để viết lên trên */
-function makeUnderlinePara(doc: XDocument, nSpaces: number): XElement {
+/** Paragraph dòng chấm "………..…" — đúng mẫu: Montserrat italic 10pt màu wave */
+function makeDotsPara(doc: XDocument, wave: string): XElement {
   const p = createW(doc, "p");
   const pPr = createW(doc, "pPr");
-  const ind = createW(doc, "ind");
-  ind.setAttribute("w:left", "120");
-  pPr.appendChild(ind);
+  const rPrP = createW(doc, "rPr");
+  const fontsP = createW(doc, "rFonts");
+  fontsP.setAttribute("w:ascii", "Montserrat");
+  fontsP.setAttribute("w:eastAsia", "Montserrat");
+  fontsP.setAttribute("w:hAnsi", "Montserrat");
+  fontsP.setAttribute("w:cs", "Montserrat");
+  rPrP.appendChild(fontsP);
+  rPrP.appendChild(createW(doc, "i"));
+  rPrP.appendChild(createW(doc, "iCs"));
+  const colorP = createW(doc, "color");
+  colorP.setAttribute("w:val", wave);
+  rPrP.appendChild(colorP);
+  const szP = createW(doc, "sz");
+  szP.setAttribute("w:val", "20"); // 10pt
+  rPrP.appendChild(szP);
+  const szCsP = createW(doc, "szCs");
+  szCsP.setAttribute("w:val", "20");
+  rPrP.appendChild(szCsP);
+  pPr.appendChild(rPrP);
   p.appendChild(pPr);
+
   const r = createW(doc, "r");
   const rPr = createW(doc, "rPr");
-  const u = createW(doc, "u");
-  u.setAttribute("w:val", "single");
-  rPr.appendChild(u);
+  const fonts = createW(doc, "rFonts");
+  fonts.setAttribute("w:ascii", "Montserrat");
+  fonts.setAttribute("w:eastAsia", "Montserrat");
+  fonts.setAttribute("w:hAnsi", "Montserrat");
+  fonts.setAttribute("w:cs", "Montserrat");
+  rPr.appendChild(fonts);
+  rPr.appendChild(createW(doc, "i"));
+  rPr.appendChild(createW(doc, "iCs"));
+  const color = createW(doc, "color");
+  color.setAttribute("w:val", wave);
+  rPr.appendChild(color);
+  const sz = createW(doc, "sz");
+  sz.setAttribute("w:val", "20"); // 10pt
+  rPr.appendChild(sz);
+  const szCs = createW(doc, "szCs");
+  szCs.setAttribute("w:val", "20");
+  rPr.appendChild(szCs);
   r.appendChild(rPr);
   const t = createW(doc, "t");
   t.setAttribute("xml:space", "preserve");
-  t.appendChild(doc.createTextNode(" ".repeat(nSpaces)));
+  t.appendChild(doc.createTextNode("………..………………………………………………………………………………………..………………"));
   r.appendChild(t);
   p.appendChild(r);
   return p;
