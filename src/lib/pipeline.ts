@@ -8,7 +8,7 @@ import { loadDocx, parseXmlBlocks } from "./parser";
 import { convertParsed, type OutputMode, type ConvertResult } from "./converter";
 import { serializeXml, stripRedundantXmlns } from "./xml";
 import type { TemplateId } from "./template";
-import { loadTemplate, extractSkeleton, stripBodySkeleton, buildFromTemplate } from "./template-file";
+import { loadTemplate, extractSkeleton, stripBodySkeleton, buildFromTemplateKeepTitle } from "./template-file";
 
 export interface ConversionOutput {
   pht: ArrayBuffer | null;
@@ -86,7 +86,7 @@ export async function convertDocx(
 
     let outBuf: ArrayBuffer;
     if (useFile) {
-      outBuf = await wrapWithTemplateFile(templateId, mode, newXml, zip);
+      outBuf = await wrapWithTemplateFileKeepTitle(templateId, mode, newXml, zip);
     } else {
       outBuf = await packDocx(zip, newXml);
     }
@@ -120,8 +120,13 @@ export async function convertDocx(
  *  - skeleton: banner + sectPr từ template
  *  - zip gốc = zip GV (giữ content-types/media/OLE)
  *  - media banner template copy với tên remap, thêm rels.
+ *
+ * KHÔNG CHÈN BANNER TEMPLATE — giữ NGUYÊN tiêu đề bài học của file gốc
+ * (yêu cầu user: "Phần tiêu đề của bài học cần giữ cố định như file gốc,
+ * không tự chỉnh sửa tiêu đề của file"). Chỉ lấy sectPr (page setup:
+ * khổ giấy + margin) từ template để bố cục đúng kỳ thi.
  */
-async function wrapWithTemplateFile(
+async function wrapWithTemplateFileKeepTitle(
   templateId: TemplateId,
   mode: OutputMode,
   convertedXml: string,
@@ -130,7 +135,9 @@ async function wrapWithTemplateFile(
   const tpl = await loadTemplate(templateId, mode);
   const skeleton = extractSkeleton(tpl.xml);
   const gvBody = stripBodySkeleton(convertedXml);
-  const merged = await buildFromTemplate(tpl, skeleton, gvBody, gvZip);
+  // KHÔNG thêm skeleton.prefixXml (banner template) — giữ tiêu đề gốc của file GV.
+  // vẫn remap sectPr header/footer rId + media ảnh nếu template có.
+  const merged = await buildFromTemplateKeepTitle(tpl, skeleton, gvBody, gvZip);
 
   // Đóng gói: copy zip GV (trừ document.xml + rels) + merged + media template
   const out = new JSZip();

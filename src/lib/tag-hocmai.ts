@@ -223,11 +223,18 @@ function tagOneParagraph(p: XElement, doc: XDocument, canonical: XElement): numb
   const m = LABEL_RE.exec(raw);
   if (!m) return 0;
   // Điểm chèn tag: ngay SAU SỐ (trước "[Trắc nghiệm...]" nếu có) — đúng chuẩn
-  // mẫu Bài 13/HSA: "Câu 1. [HOCMAI] ..." / "Câu 1 [HOCMAI] – (ID:...)".
-  // Nếu nhãn là "Câu N [Trắc nghiệm ...]" → chèn [HOCMAI] TRƯỚC "[Trắc".
-  let end = m.index + m[0].length;
-  const trnIdx = m[0].indexOf("[Trắc");
-  if (trnIdx >= 0) end = m.index + trnIdx;
+    // mẫu Bài 13/HSA: "Câu 1. [HOCMAI] ..." / "Câu 1 [HOCMAI] – (ID:...)".
+    // Nếu LABEL_RE match trọn "[HOCMAI]" (HSA "Câu 1 [HOCMAI]") → coi NHƯ ĐÃ CÓ TAG:
+    // trỏ end tới tag để nhánh "đã có tag" chuẩn hóa rPr, KHÔNG chèn thêm
+    // (nếu không sẽ tạo "[HOCMAI] [HOCMAI]" đúp — bug gặp với HSA 2026-09).
+    let end = m.index + m[0].length;
+    const hocmaiInMatch = m[0].indexOf("[HOCMAI]");
+    if (hocmaiInMatch >= 0) {
+      end = m.index + hocmaiInMatch;
+    } else {
+      const trnIdx = m[0].indexOf("[Trắc");
+      if (trnIdx >= 0) end = m.index + trnIdx;
+    }
 
   // Tìm run chứa [HOCMAI] ngay sau nhãn (trong khoảng whitespace 40 ký tự)
   const after = raw.slice(end, end + 60);

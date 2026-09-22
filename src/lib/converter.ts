@@ -201,14 +201,10 @@ export function convertDom(
   }
   const doc = body.ownerDocument;
 
-  // ===== 0) Banner nhận diện (chỉ khi KHÔNG dùng template file) =====
-  // Khi useFileTemplate=true, banner + sectPr đến từ file template thật (merge sau).
-  if (!useFileTemplate && idx.length > 0) {
-    const banner = makeBannerPara(doc, tpl.header, tpl.color);
-    const firstEl = idx[0].el;
-    body.insertBefore(banner, firstEl);
-    notes.push(`Template: ${tpl.label} — đã chèn banner "${tpl.header}".`);
-  }
+    // ===== 0) KHÔNG chèn banner/template — giữ NGUYÊN phần đầu file gốc (tiêu đề bài học
+    //     của GV). Yêu cầu user: "Phần tiêu đề của bài học cần giữ cố định như file gốc,
+    //     không tự chỉnh sửa tiêu đề của file". Trước đây template TSA inject banner
+    //     "TỔNG ÔN MÔN VẬT LÍ SỰ CHUYỂN THỂ..." vào MỌI file → tiêu đề bài sai =====
 
   // ===================== PHT =====================
       if (mode === "pht") {

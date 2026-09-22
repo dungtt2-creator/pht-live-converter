@@ -195,13 +195,37 @@ export async function buildFromTemplate(
               );
             }
 
-  // 5) document.xml: docHead + prefix + body GV + sectPr template (đã remap) + tail đóng
-      const documentXml =
-        skeleton.docHead +
-        skeleton.prefixXml +
-        gvBodyXml +
-        sectPr +
-        skeleton.tailXml;
+  // 5) document.xml: docHead + prefix (mặc định banner template; buildFromTemplateKeepTitle
+      //    truyền prefix chỉ còn "<w:body>" để GIỮ tiêu đề gốc — không banner) + body GV
+      //    + sectPr template (đã remap) + tail đóng
+          const documentXml =
+            skeleton.docHead +
+            skeleton.prefixXml +
+            gvBodyXml +
+            sectPr +
+            skeleton.tailXml;
 
-    return { documentXml, relsXml, extraMedia };
-      }
+      return { documentXml, relsXml, extraMedia };
+        }
+
+  /**
+   * Giữ tiêu đề bài học của file gốc: KHÔNG chèn banner template vào đầu body.
+   * Chỉ ghép sectPr (page setup) + xử lý header/footer rId. Yêu cầu user:
+   * "Phần tiêu đề của bài học cần giữ cố định như file gốc, không tự chỉnh sửa
+   * tiêu đề của file" (2026-09-22).
+   *
+   * PITFALL: prefixXml của template BẮT ĐẦU bằng thẻ mở "<w:body>" (banner nằm
+   * ngay sau) — set prefixXml="" sẽ MẤT <w:body> mở → XML mismatched tag → Word
+   * báo corrupt. Phải giữ đúng "<w:body>", chỉ bỏ phần banner phía sau.
+   */
+  export async function buildFromTemplateKeepTitle(
+    tpl: LoadedTemplate,
+    skeleton: TemplateSkeleton,
+    gvBodyXml: string,
+    gvZip: JSZip,
+  ): Promise<MergeResult> {
+    const bodyOpenMatch = skeleton.prefixXml.match(/^<w:body[^>]*>/);
+    const prefixXml = bodyOpenMatch ? bodyOpenMatch[0] : "<w:body>";
+    const result = await buildFromTemplate(tpl, { ...skeleton, prefixXml }, gvBodyXml, gvZip);
+    return result;
+  }

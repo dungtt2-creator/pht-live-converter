@@ -3,8 +3,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { convertDocx, outputFileName } from "@/lib/pipeline";
 import type { ConvertResult } from "@/lib/converter";
-import { TEMPLATES, DEFAULT_TEMPLATE } from "@/lib/template";
-import type { TemplateId } from "@/lib/template";
 
 type Phase = "idle" | "converting" | "done" | "error";
 
@@ -35,10 +33,9 @@ function download(buf: ArrayBuffer, name: string) {
 
 export default function Converter() {
   const [phase, setPhase] = useState<Phase>("idle");
-  const [err, setErr] = useState<string>("");
-  const [payload, setPayload] = useState<Payload | null>(null);
-  const [templateId, setTemplateId] = useState<TemplateId>(DEFAULT_TEMPLATE);
-  const inputRef = useRef<HTMLInputElement>(null);
+    const [err, setErr] = useState<string>("");
+    const [payload, setPayload] = useState<Payload | null>(null);
+    const inputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
 
   const run = useCallback(async (file: File) => {
@@ -54,11 +51,10 @@ export default function Converter() {
       const ab = await file.arrayBuffer();
       const t0 = performance.now();
       const out = await convertDocx(ab, {
-        modes: ["pht", "live"],
-        fileName: file.name,
-        templateId,
-        useFileTemplate: true, // dùng file template thật theo kỳ thi
-      });
+              modes: ["pht", "live"],
+              fileName: file.name,
+              useFileTemplate: true, // dùng file template thật (TSA default)
+            });
       const ms = Math.round(performance.now() - t0);
       const base = file.name.replace(/\.docx?$/i, "");
       setPayload({
@@ -102,52 +98,20 @@ export default function Converter() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-10">
       <header className="mb-8 text-center">
-        <h1 className="text-3xl font-bold text-slate-900">
-          Chuyển tài liệu Word → Phiếu học tập &amp; Tài liệu Live
-        </h1>
-        <p className="mt-3 text-sm leading-relaxed text-slate-500">
-          Upload file <b>.docx</b> thô của giáo viên: hệ thống tự tách{" "}
-          <b>Phiếu học tập</b> (kiến thức cô đọng + chỗ trống cho học sinh, bỏ đáp
-          án/hướng dẫn) và <b>Tài liệu Live</b> (giữ nguyên 100% kiến thức gốc, bổ
-          sung vùng để giáo viên viết ở mỗi câu hỏi khi giảng dạy trực tiếp). Xử lý
-          hoàn toàn trên máy bạn — không gửi dữ liệu lên server. Chọn kỳ thi bên dưới
-          để xuất đúng template của kỳ thi đó.
-        </p>
-      </header>
+              <h1 className="text-3xl font-bold text-slate-900">
+                Chuyển tài liệu Word → Phiếu học tập &amp; Tài liệu Live
+              </h1>
+              <p className="mt-3 text-sm leading-relaxed text-slate-500">
+                Upload file <b>.docx</b> thô của giáo viên: hệ thống tự tách{" "}
+                <b>Phiếu học tập</b> (kiến thức cô đọng + chỗ trống cho học sinh, bỏ đáp
+                án/hướng dẫn) và <b>Tài liệu Live</b> (giữ nguyên 100% kiến thức gốc, bổ
+                sung vùng để giáo viên viết ở mỗi câu hỏi khi giảng dạy trực tiếp). Xử lý
+                hoàn toàn trên máy bạn — không gửi dữ liệu lên server. Tiêu đề và banner
+                của bài học được giữ nguyên như file gốc.
+              </p>
+            </header>
 
-      {/* Chọn template kỳ thi */}
-      <div className="mb-6">
-        <p className="mb-2 text-center text-sm font-semibold text-slate-600">
-          Chọn template kỳ thi / hệ thống:
-        </p>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-          {TEMPLATES.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTemplateId(t.id as TemplateId)}
-              className={`rounded-xl border-2 px-3 py-2 text-center transition ${
-                templateId === t.id
-                  ? "border-transparent text-white shadow-md"
-                  : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
-              }`}
-              style={
-                templateId === t.id
-                  ? { backgroundColor: `#${t.color}` }
-                  : { borderColor: `#${t.color}` }
-              }
-              title={t.desc}
-            >
-              <span className="block text-sm font-bold">{t.label}</span>
-            </button>
-          ))}
-        </div>
-        <p className="mt-2 text-center text-xs text-slate-400">
-          {TEMPLATES.find((t) => t.id === templateId)?.desc}
-        </p>
-      </div>
-
-      <div
+            <div
         onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
         onDragLeave={() => setDragActive(false)}
         onDrop={onDrop}
