@@ -22,6 +22,7 @@ import { addHocmaiTags } from "./tag-hocmai";
 import { getTemplate, type TemplateId } from "./template";
 import { applyVodLayout } from "./template-vod";
 import { fixHeadingKeepNext, cleanupSpacers } from "./pagination";
+import { normalizeStimulusHeadings } from "./stimulus";
 
 export type OutputMode = "pht" | "live";
 
@@ -202,6 +203,20 @@ export function convertDom(
     notes.push(`Cảnh báo: số block model (${blocks.length}) khác số phần tử body (${idx.length}).`);
   }
   const doc = body.ownerDocument;
+
+  // ===== 0a) CHUẨN HÓA CÂU DẪN NGỮ LIỆU (quy tắc user 10-2026):
+  //     "Dựa vào thông tin dưới đây để trả lời các câu hỏi từ 33 đến 35"
+  //   → "Dựa vào thông tin dưới đây để trả lời 3 câu hỏi sau."
+  //     Chỉ thay text trong các w:t đã có → giữ nguyên màu/đậm/font/vị trí.
+  //     Chạy TRƯỚC mọi bước khác để cả PHT lẫn Live đều nhận bản đã chuẩn hóa.
+  const stim = normalizeStimulusHeadings(body);
+  if (stim.changes.length) {
+    notes.push(
+      `Đã chuẩn hóa ${stim.changes.length} câu dẫn ngữ liệu: ` +
+        stim.changes.map((c) => `${c.before} → ${c.after.replace(/\.$/, "")}`).join("; ") +
+        ".",
+    );
+  }
 
     // ===== 0) KHÔNG chèn banner/template — giữ NGUYÊN phần đầu file gốc (tiêu đề bài học
     //     của GV). Yêu cầu user: "Phần tiêu đề của bài học cần giữ cố định như file gốc,
