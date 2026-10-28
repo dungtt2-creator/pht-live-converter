@@ -837,13 +837,89 @@ export function applyVodLayout(
     choiceParas: XElement[]; // riêng các paragraph được phân loại "choices"
     id: string | null;
     qnum: number;
+    /** khối ngữ liệu chung đứng trước câu này (ID ngữ liệu + câu dẫn + nội dung)
+     *  — được LẶP LẠI trên trang của từng câu trong cùng nhóm. */
+    stimParas: XElement[];
   };
   const groups: Group[] = [];
   const n = Math.min(blocks.length, idx.length);
+
+  /** Ranh giới NGỮ LIỆU: paragraph bắt đầu bằng "Dựa vào thông tin…", "Đọc…",
+   *  "Cho đoạn trích…" + đã chuẩn hóa câu dẫn "…x câu hỏi sau.".
+   *  BỎ tiền tố tag "[HOCMAI] – (ID: x) " trước khi so khớp — file đề thật đặt
+   *  mã ID ngữ liệu NGAY TRƯỚC câu dẫn trong cùng paragraph nên nếu không strip
+   *  thì block bị xếp loại "theory" và câu hỏi trước đó sẽ NUỐT mất khối ngữ liệu
+   *  (bug: câu dẫn nằm lẫn trong khung của câu trước). */
+  const stripLeadTag = (t: string): string =>
+    t.replace(/^\s*\[\s*HOCMAI\s*\]\s*[-–—:.]?\s*(?:\(\s*ID\s*[:：][^)]*\))?\s*/i, "").trim();
+
+  const isStimulusStart = (blk: DocBlock): boolean => {
+    if (blk.kind === "table") return false;
+    const t = stripLeadTag((blk as Block).text ?? "");
+    if (!t) return false;
+    if (blk.kind === "instruction") return true;
+    return /^(?:Dựa\s+vào|Sử\s+dụng|Đọc|Xem\s+xét|Căn\s+cứ|Kết\s+hợp|Cho\s+đoạn\s+trích)\s*(?:thông\s+tin|dữ\s+liệu|đoạn|bài|hình|bảng|đề|đồ\s+thị)?/i.test(
+      t,
+    ) && /Dựa\s+vào\s+thông\s+tin\s+dưới\s+đây|Đọc\s+(?:đoạn|văn\s+bản|thông\s+tin)|trả\s+lời\s+\d+\s+câu\s+hỏi\s+sau/i.test(t);
+  };
+
+  // Thu thập vùng ngữ liệu: từ paragraph mở đầu ngữ liệu TỚI ngay trước câu hỏi kế.
+  // Kèm số câu hỏi mà câu dẫn công bố ("…trả lời x câu hỏi sau.") → chỉ áp dụng
+  // ngữ liệu cho ĐÚNG x câu hỏi kế tiếp, không lan sang các câu sau nhóm.
+  const stimRanges: Array<{ start: number; end: number; paras: XElement[]; count: number }> = [];
+  for (let i = 0; i < n; i++) {
+    if (idx[i].isTable || !blocks[i] || !isStimulusStart(blocks[i])) continue;
+    const paras: XElement[] = [];
+    let count = 0;
+    let j = i;
+    while (j < n) {
+      const bb = blocks[j];
+      if (j > i) {
+        if (bb.kind === "table") break;
+        const k = (bb as Block).kind;
+        if (k === "question" || k === "heading" || k === "guideline" || k === "answer") break;
+        if (isStimulusStart(bb)) break;
+      }
+      // đọc số câu hỏi từ câu dẫn: ưu tiên bản ĐÃ chuẩn hóa ("…x câu hỏi sau."),
+      // nếu chưa (blocks giữ text gốc) thì tính từ "từ A đến B".
+      if (!count) {
+        const t = ((bb as Block).text ?? "").normalize("NFC");
+        const m1 = /(\d{1,3})\s+câu\s+hỏi\s+sau/i.exec(t);
+        const m2 =
+          /trả\s+lời\s+(?:các\s+)?(?:câu\s+(?:hỏi\s+)?)?(?:sau\s+)?từ\s+(?:câu\s+)?(\d{1,3})\s*(?:đến|[-–—])\s*(?:câu\s+)?(\d{1,3})/i.exec(t) ||
+          /trả\s+lời\s+(?:các\s+)?câu\s+(?:hỏi\s+)?(\d{1,3})\s*(?:đến|[-–—])\s*(?:câu\s+)?(\d{1,3})/i.exec(t);
+        if (m1) count = parseInt(m1[1], 10);
+        else if (m2) count = parseInt(m2[2], 10) - parseInt(m2[1], 10) + 1;
+      }
+      if (!idx[j].isTable && idx[j].el.parentNode) paras.push(idx[j].el);
+      j++;
+    }
+    if (paras.length) stimRanges.push({ start: i, end: j, paras, count });
+    i = j - 1;
+  }
+
+  /** Map: chỉ số block câu hỏi → ngữ liệu áp dụng (chỉ x câu hỏi kế tiếp). */
+  const stimByQuestion = new Map<number, XElement[]>();
+  for (const rng of stimRanges) {
+    const qIdx: number[] = [];
+    for (let k = rng.end; k < n; k++) {
+      const bk = blocks[k];
+      if (bk.kind === "table") continue;
+      const kk = (bk as Block).kind;
+      if (kk === "heading" || isStimulusStart(bk)) break;
+      if (kk === "question") qIdx.push(k);
+      if (rng.count > 0 && qIdx.length >= rng.count) break;
+    }
+    for (const q of qIdx) stimByQuestion.set(q, rng.paras);
+  }
+
   for (let i = 0; i < n; i++) {
     const b = blocks[i];
     if (b.kind === "table" || (b as Block).kind !== "question") continue;
     if (idx[i].isTable || !idx[i].el.parentNode) continue;
+    // câu hỏi nằm TRONG vùng ngữ liệu (hiếm) → ngữ liệu của chính nó
+    const inStim = stimRanges.find((rg) => i > rg.start && i < rg.end);
+    // ngữ liệu của câu này: ưu tiên map (đúng x câu trong câu dẫn), fallback vùng bao
     const txt = (b as Block).text;
     const idMatch = ID_RE.exec(txt);
     const qnumMatch = /^[Cc]âu\s*(\d{1,3})/.exec(txt.trim());
@@ -862,9 +938,10 @@ export function applyVodLayout(
       }
       const blk = bb as Block;
       if (j > i && blk.kind === "question") break;
-      // "instruction" = ngữ liệu chung ("Dựa vào thông tin dưới đây…", "Cho đa giác
-      // lồi 16 cạnh.") → ĐƯA VÀO KHUNG của câu này (yêu cầu: toàn bộ đề bài nằm
-      // gọn trong 1 khung). Chỉ heading/guideline mới ngắt nhóm.
+      // NGỮ LIỆU MỚI bắt đầu → ngắt nhóm (không nuốt vào câu trước).
+      if (j > i && isStimulusStart(bb)) break;
+      // "instruction" = ngữ liệu chung KHÁC (vd "Cho đa giác lồi 16 cạnh.") vẫn
+      // thuộc câu này nếu nó ở giữa; chỉ heading/guideline mới ngắt nhóm.
       if (j > i && (blk.kind === "heading" || blk.kind === "guideline")) break;
       if (idx[j].el.parentNode) {
         elems.push(idx[j].el);
@@ -879,10 +956,29 @@ export function applyVodLayout(
         choiceParas,
         id: idMatch ? idMatch[1] : null,
         qnum: qnumMatch ? parseInt(qnumMatch[1], 10) : 0,
+        stimParas: stimByQuestion.get(i) ?? (inStim ? inStim.paras : []),
       });
     }
     i = j - 1;
+  };
+
+  // ---- 1b) TÁCH KHỐI NGỮ LIỆU khỏi dòng chảy body và NHÂN BẢN cho từng câu.
+  //      Yêu cầu user 10-2026: mỗi trang chỉ chứa ĐÚNG 1 cụm hoàn chỉnh gồm
+  //      [Mã ID ngữ liệu + câu dẫn] + [nội dung ngữ liệu chung] + [1 câu hỏi + A,B,C,D].
+  //      ⇒ ngữ liệu gốc phải bỏ khỏi body (nếu để nguyên sẽ thành paragraph trôi
+  //      nổi giữa 2 trang) và được clone vào khung của TỪNG câu trong nhóm.
+  const stimOriginals = new Set<XElement>();
+  const stimClones = new Map<XElement[], XElement[]>();
+  for (const rng of stimRanges) {
+    const clones: XElement[] = [];
+    for (const p of rng.paras) {
+      stimOriginals.add(p);
+      clones.push(p.cloneNode(true) as XElement);
+    }
+    stimClones.set(rng.paras, clones);
   }
+  // bỏ bản gốc khỏi body — chỉ giữ bản clone để chèn vào từng trang
+  for (const p of stimOriginals) p.parentNode?.removeChild(p as XNode);
 
   // ---- 2) Bỏ nhãn "Câu N." + ép tag [HOCMAI] - (ID: x) đậm đỏ (làm trước khi dựng khung)
   for (const g of groups) {
@@ -941,12 +1037,21 @@ export function applyVodLayout(
     const content = findTxbxContent(boxP);
     const picSet = new Set<XElement>(picParas);
     const skip = new Set<XElement>(g.choiceParas);
+    // Khối ngữ liệu chung được NHÂN BẢN vào đầu khung (trước câu hỏi) — mỗi trang
+    // thuộc nhóm ngữ liệu đều có lại [ID + câu dẫn + nội dung] như yêu cầu.
+    const stimForThis = g.stimParas.length ? (stimClones.get(g.stimParas) ?? []) : [];
+    const stimNodes: XElement[] = stimForThis.map((p) => p.cloneNode(true) as XElement);
     if (content) {
       for (const c of childrenOf(content)) {
         if (isW(c, "p") && paragraphText(c).trim() === "" && !hasVisual(c)) {
           content.removeChild(c as XNode);
           break;
         }
+      }
+      // Đưa ngữ liệu vào TRƯỚC (đầu khung)
+      for (const sp of stimNodes) {
+        if (isW(sp, "tbl")) shrinkTableToWidth(sp, doc, boxW);
+        content.appendChild(sp);
       }
       for (const e of g.elems) {
         if (skip.has(e) || picSet.has(e)) continue;
@@ -1014,7 +1119,9 @@ export function applyVodLayout(
       .filter((e) => !picSet.has(e) && !skip.has(e))
       .reduce((acc, e) => acc + estimateParaHeightTwips(e, boxW), 0)
       // + chiều cao dòng đáp án đã gộp (1 hoặc 2 dòng tuỳ độ dài)
-      + (g.choiceParas.length ? 900 : 0);
+      + (g.choiceParas.length ? 900 : 0)
+      // + chiều cao KHỐI NGỮ LIỆU lặp lại ở đầu khung (ID + câu dẫn + nội dung)
+      + stimNodes.reduce((acc, sp) => acc + estimateParaHeightTwips(sp, boxW), 0);
     // CHỈ số paragraph NẰM TRONG khung (bỏ hình đã ra cột phải, bỏ đáp án cũ đã gộp)
     // nhưng VẪN cộng chiều cao hình cho câu có hình: khi hình ra cột phải, khung
     // thường thấp hơn nhưng phần chữ câu hỏi vẫn chiếm chỗ; số đo thực tế cho thấy
