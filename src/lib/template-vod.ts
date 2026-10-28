@@ -25,7 +25,9 @@ import type { LoadedTemplate } from "./template-loader";
 /** Màu dòng kẻ chấm (xanh dương nhạt — đúng mẫu) */
 export const VOD_COLOR = "00B0F0";
 /** Màu viền khung + màu tag [HOCMAI]: đỏ gạch/đỏ đô */
-export const VOD_BORDER = "C0504D";
+export const VOD_BORDER = "C0504D"; // đỏ gạch (mẫu); nhạt hơn: D99694
+/** Màu nhãn phương án A./B./C./D. — xanh dương như mẫu */
+export const VOD_CHOICE_LABEL = "0070C0";
 export const VOD_TAG_COLOR = "C00000";
 /** Times New Roman 14pt = sz 28 (half-point) — phần văn bản soạn thảo */
 const VOD_SZ = "28";
@@ -39,16 +41,41 @@ const PG_MAR = 567;
 /** Bề rộng vùng soạn thảo = 18144 - 2×567 = 17010 twips (đúng lề trang) */
 const TEXT_W = 18144 - PG_MAR * 2;
 /**
- * Bề rộng khung câu hỏi. Mẫu: khung 398.5pt ≈ 8080 twips (14.2 cm) — giữ đúng
- * để diện mạo giống mẫu; phần còn lại của trang là lề trống như file mẫu.
+ * Bề rộng khung = TOÀN BỘ bề rộng vùng soạn thảo (17010 twips = 30 cm), để đề bài
+ * + 4 phương án luôn nằm gọn trong khung, không tràn/đè ra ngoài viền, và cân
+ * với dòng kẻ chấm bên dưới (cùng bắt đầu/kết thúc ở 2 lề).
  */
-const BOX_W = 8080;
-/** Góc bo của shape mẫu: arcsize="10923f" (f = 1/100000) */
-const ARC_SIZE = "10923f";
-/** Số dòng kẻ chấm cho mỗi câu */
-const DOTS_PER_QUESTION = 4;
-/** Khoảng cách dòng kẻ chấm: line 480 = gấp đôi dòng đơn (~32pt) — đều nhau */
-const DOTS_LINE = "480";
+const BOX_W = TEXT_W;
+/**
+ * Góc bo NHẸ (vuông hơn hẳn mẫu cũ 10923f): arcsize 3000f ≈ 3% cạnh ngắn —
+ * bo mềm 4 góc nhưng nhìn vẫn là khung chữ nhật (yêu cầu "bo nhẹ, tránh bo tròn quá nhiều").
+ */
+const ARC_SIZE = "3000f";
+/**
+ * Số dòng kẻ chấm/câu: KHÔNG cố định — tính động để phủ kín phần còn lại của
+ * trang tới mép lề dưới (yêu cầu: "phủ kín toàn bộ phần còn lại của trang").
+ * DOTS_LINE là khoảng cách dòng cố định → số dòng = (chiều cao khả dụng - chiều
+ * cao khung) / DOTS_LINE_PT.
+ */
+/**
+ * Bước dòng kẻ chấm THẬT (đo từ PDF render): 27.6pt ≈ 552 twips
+ * (spacing line=360 + chiều cao chữ 12pt). Dùng số này để tính số dòng vừa trang —
+ * nếu tính theo 360 sẽ thừa ~35% số dòng → tràn sang trang sau.
+ */
+/**
+ * Bước dòng kẻ chấm ĐO THỰC TẾ (calibrate bằng Word + PDF, không suy đoán):
+ * spacing w:line=360 → mỗi dòng chấm chiếm 19.3pt = 386 twips trong bản in.
+ * Với trang 18 cm (khả dụng 16 cm = 9072 twips) chứa được 23 dòng → phủ tới
+ * cách mép lề dưới chỉ 8.9pt. Đây là con số dùng để tính số dòng cho mỗi câu.
+ */
+const DOTS_LINE_TWIPS = 386;
+/** Bước dòng khi dùng lineRule=exact (twips) — chốt cứng để khoảng cách đều tuyệt đối */
+const DOTS_STEP_EXACT = 386;
+const DOTS_LINE = "360";
+/** Số dòng chấm tối đa của 1 trang TRỐNG (không có khung) — dùng làm mốc trừ dần */
+const DOTS_FULL_PAGE = 23;
+/** Chiều cao khả dụng 1 trang (twips): 18 cm - 2×1 cm lề = 16 cm = 9072 twips */
+const PAGE_BODY_H = 10206 - PG_MAR * 2;
 
 /** Khai báo namespace còn thiếu (file GV hiếm khi khai báo vml/mc…) */
 const NS_MAP: Record<string, string> = {
@@ -113,13 +140,15 @@ function runText(
  * Tab stop RIGHT tại TEXT_W với leader="dot" → Word tự vẽ chấm đều từ lề trái
  * tới lề phải, không bao giờ wrap thành dòng thứ hai hay đứt đoạn.
  */
-export function makeVodDots(doc: XDocument): XElement {
+export function makeVodDots(doc: XDocument, lineTw = 360): XElement {
   const p = el(doc, "p");
   const pPr = el(doc, "pPr");
   const tabs = el(doc, "tabs");
   tabs.appendChild(el(doc, "tab", { "w:val": "right", "w:leader": "dot", "w:pos": String(TEXT_W) }));
   pPr.appendChild(tabs);
-  pPr.appendChild(el(doc, "spacing", { "w:before": "0", "w:after": "0", "w:line": DOTS_LINE, "w:lineRule": "auto" }));
+  // lineRule="exact" để mọi dòng chấm cách nhau CHÍNH XÁC cùng một bước
+  // (dùng "auto" thì Word cộng thêm leading font → khoảng cách dao động 22-31pt).
+  pPr.appendChild(el(doc, "spacing", { "w:before": "0", "w:after": "0", "w:line": String(lineTw), "w:lineRule": "exact" }));
   const rPrP = tnr(doc, DOTS_SZ);
   rPrP.appendChild(el(doc, "color", { "w:val": VOD_COLOR }));
   pPr.appendChild(rPrP);
@@ -135,16 +164,20 @@ export function makeVodDots(doc: XDocument): XElement {
 }
 
 /**
- * Khung câu hỏi bo tròn 4 góc = shape VML roundrect, viền 1pt đỏ gạch, nền trắng.
- * - arcsize 10923f: đúng độ bo của mẫu (nhỏ, không phải viên thuốc).
- * - `mso-fit-shape-to-text:t` + width cố định: khung TỰ CAO theo nội dung, nên
- *   câu hỏi dài không bị tràn/cắt chữ (textbox mẫu thì cố định chiều cao).
- * - Shape đặt INLINE trong 1 paragraph (không floating): mọi thứ chèn sau nó
- *   tự chảy xuống dưới khung, không đè lên nhau.
+ * Khung câu hỏi = shape VML roundrect, viền 1pt đỏ gạch/hồng, nền trắng, bo NHẸ.
+ * - arcsize 3000f: bo nhẹ (vuông hơn mẫu cũ 10923f) theo yêu cầu.
+ * - `mso-fit-shape-to-text:t` + width = full bề rộng lề: khung TỰ CAO theo nội
+ *   dung nên đề bài + 4 phương án luôn NẰM GỌN trong viền, không tràn/đè ra ngoài.
+ * - Shape INLINE trong 1 paragraph (không floating): mọi thứ chèn sau tự chảy
+ *   xuống dưới khung, không đè lên nhau (floating đã thử → text chồng nhau).
  */
-function makeVodQuestionBox(doc: XDocument): XElement {
+function makeVodQuestionBox(doc: XDocument, pageBreakBefore = false): XElement {
   const p = el(doc, "p");
   const pPr = el(doc, "pPr");
+  // 1 câu/1 trang: dùng pageBreakBefore trên CHÍNH paragraph của khung (không
+  // dùng paragraph chứa break riêng — cách đó sinh trang trắng xen kẽ).
+  if (pageBreakBefore) pPr.appendChild(el(doc, "pageBreakBefore"));
+  pPr.appendChild(el(doc, "keepNext"));
   pPr.appendChild(el(doc, "spacing", { "w:before": "0", "w:after": "0", "w:line": "240", "w:lineRule": "auto" }));
   pPr.appendChild(el(doc, "ind", { "w:left": "0", "w:right": "0", "w:firstLine": "0" }));
   p.appendChild(pPr);
@@ -160,7 +193,7 @@ function makeVodQuestionBox(doc: XDocument): XElement {
   });
   const textbox = elVml(doc, "textbox", {
     style: "mso-fit-shape-to-text:t",
-    inset: "6pt,3pt,6pt,3pt",
+    inset: "8pt,5pt,8pt,5pt",
   });
   const content = createWElement(doc, "txbxContent");
   content.appendChild(el(doc, "p")); // đệm — nội dung câu hỏi được chuyển vào sau
@@ -551,15 +584,16 @@ function mergeChoicesIntoOneLine(
   if (present.length < 2) return { merged: null, labels };
 
   // Dựng paragraph 1 dòng, tab stop chia đều bề rộng khung
-  // Chia đều bề rộng khung: A ở lề trái (0), các nhãn sau cách đều `step`.
-  // Tab stop đầu = 0 để A không bị thụt vào; nếu để 200 thì cột A hẹp hơn các cột.
+  // 4 cột đều nhau: tab stop cho B/C/D tại step, 2·step, 3·step (A nằm ở lề trái,
+  // KHÔNG cần tab). Bỏ tab stop tại 0 vì Word bỏ qua tab trỏ về đúng vị trí hiện tại
+  // → cả 4 đáp án bị dồn thành nhiều dòng.
   const step = Math.floor(BOX_W / present.length);
   const p = el(doc, "p");
   const pPr = el(doc, "pPr");
   const tabs = el(doc, "tabs");
-  present.forEach((_, i) => {
+  for (let i = 1; i < present.length; i++) {
     tabs.appendChild(el(doc, "tab", { "w:val": "left", "w:pos": String(i * step) }));
-  });
+  }
   pPr.appendChild(tabs);
   pPr.appendChild(el(doc, "spacing", { "w:before": "60", "w:after": "40", "w:line": "360", "w:lineRule": "auto" }));
   pPr.appendChild(el(doc, "ind", { "w:left": "0", "w:right": "0", "w:firstLine": "0" }));
@@ -567,13 +601,16 @@ function mergeChoicesIntoOneLine(
   p.appendChild(pPr);
 
   present.forEach((lab, i) => {
+    // Tab CHỈ đặt TRƯỚC đáp án thứ 2 trở đi. Đặt tab trước A sẽ đẩy A sang tab
+    // stop đầu tiên — nhưng nếu tab stop đầu = 0 thì Word BỎ QUA tab, cả dòng dồn
+    // thành nhiều dòng (bug: A/B/C/D rơi xuống 3 dòng khác nhau).
     if (i > 0) {
       const rTab = el(doc, "r");
       rTab.appendChild(tnr(doc));
       rTab.appendChild(el(doc, "tab"));
       p.appendChild(rTab);
     }
-    p.appendChild(runText(doc, `${lab}. `, { bold: true, color: VOD_BORDER }));
+    p.appendChild(runText(doc, `${lab}. `, { bold: true, color: VOD_CHOICE_LABEL }));
     for (const r of buckets.get(lab)!) p.appendChild(r as XNode);
   });
   return { merged: p, labels };
@@ -664,7 +701,7 @@ export function applyVodLayout(
   blocks: DocBlock[],
   body: XElement,
   doc: XDocument,
-  dotsPerQuestion = DOTS_PER_QUESTION,
+  dotsPerQuestion = 0, // 0 = TỰ ĐỘNG lấp kín trang (1 câu/trang)
 ): VodConvertStats {
   const idx: Array<{ el: XElement; isTable: boolean }> = [];
   for (const child of childrenOf(body)) {
@@ -723,10 +760,20 @@ export function applyVodLayout(
     let j = i;
     while (j < n) {
       const bb = blocks[j];
-      if (bb.kind === "table" || idx[j].isTable) break; // bảng ngữ liệu: NGOÀI khung
+      // BẢNG NGỮ LIỆU (bảng tần số/số liệu của chính câu này) → ĐƯA VÀO KHUNG.
+      // Trước đây `break` tại bảng khiến phần "Tứ phân vị…" + 4 đáp án rơi ra
+      // ngoài khung (bug: trang không có khung, chỉ có chữ trôi nổi).
+      if (bb.kind === "table" || idx[j].isTable) {
+        if (j > i && idx[j].el.parentNode) elems.push(idx[j].el);
+        j++;
+        continue;
+      }
       const blk = bb as Block;
       if (j > i && blk.kind === "question") break;
-      if (j > i && (blk.kind === "heading" || blk.kind === "instruction" || blk.kind === "guideline")) break;
+      // "instruction" = ngữ liệu chung ("Dựa vào thông tin dưới đây…", "Cho đa giác
+      // lồi 16 cạnh.") → ĐƯA VÀO KHUNG của câu này (yêu cầu: toàn bộ đề bài nằm
+      // gọn trong 1 khung). Chỉ heading/guideline mới ngắt nhóm.
+      if (j > i && (blk.kind === "heading" || blk.kind === "guideline")) break;
       if (idx[j].el.parentNode) {
         elems.push(idx[j].el);
         if (blk.kind === "choices") choiceParas.push(idx[j].el);
@@ -752,8 +799,11 @@ export function applyVodLayout(
   }
 
   // ---- 3) Dựng khung bo góc + nội dung + dòng chấm cho từng câu
+  let firstGroup = true;
   for (const g of groups) {
-    const boxP = makeVodQuestionBox(doc);
+    // Câu đầu giữ nguyên trang 1; các câu sau bắt đầu trang mới (1 câu/trang).
+    const boxP = makeVodQuestionBox(doc, !firstGroup);
+    firstGroup = false;
     const first = g.elems[0];
     first.parentNode!.insertBefore(boxP as XNode, first as XNode);
 
@@ -789,17 +839,45 @@ export function applyVodLayout(
     // dọn paragraph phương án cũ còn sót trong body (đã thay bằng bản gộp)
     for (const cp of g.choiceParas) cp.parentNode?.removeChild(cp as XNode);
 
-    // 3c) Dòng kẻ chấm ngay SAU khung, dài liền hết lề trang
+    // 3c) Dòng kẻ chấm ngay SAU khung — số dòng TÍNH ĐỘNG để phủ kín phần còn
+    //     lại của trang tới mép lề dưới (mỗi câu 1 trang).
+    //     Chiều cao khung = tổng chiều cao ước lượng từng paragraph (đọc cả khối
+    //     hình/đồ thị nhúng) + viền/inset.
+    // 3c) Vùng kẻ chấm: ĐẶT ĐỦ SỐ DÒNG để phủ tới mép lề dưới rồi để Word CẮT phần
+    //     dư ở cuối trang — nhờ vậy không bao giờ tràn sang trang sau (bug cũ: tràn
+    //     sinh trang trắng) mà vẫn phủ kín 100% phần còn lại của trang.
+    //     Số dòng đặt = phần còn lại ước lượng + 3 dòng dư (dư bị cắt, không hiện).
+    // Số dòng chấm = số dòng còn chỗ sau khung, tính từ MỐC CALIBRATE thật
+    // (trang trống chứa 23 dòng chấm) để phủ kín tới mép lề dưới mà không tràn.
+    // Cộng chiều cao BẢNG NGỮ LIỆU đứng ngay trước khung (bảng nằm ngoài khung
+    // theo mẫu) — nếu bỏ qua, số dòng chấm tính thừa → tràn trang, sinh trang trắng
+    // (bug gặp ở câu có bảng tần số).
+    const leadingTableH = tableHeightBefore(body, boxP);
+    // Ước lượng chiều cao khung. Hệ số 1.35 là HỆ SỐ HIỆU CHỈNH đo được: ước lượng
+    // theo ký tự thường THẤP hơn chiều cao thật (do công thức OLE, nhiều dòng đáp án),
+    // nên nhân lên để không cấp thừa dòng chấm → tránh tràn trang.
+    // Ước lượng chiều cao khung — HIỆU CHỈNH theo số đo thật trên PDF:
+    // khung câu 132 ký tự + 4 đáp án cao 106pt = 2120 twips; ước lượng ký tự cho
+    // 1200 twips → cần hệ số nhân để khớp. Hệ số 0.6 (trước đây ước CAO gấp ~1.7
+    // lần) để số dòng chấm phủ kín phần còn lại của trang.
+    const estH = g.elems.reduce((acc, e) => acc + estimateParaHeightTwips(e), 0);
+    const boxH = estH * 0.6 + 900 + leadingTableH + 900; // +900 = 1 dòng an toàn
+    const availH = PAGE_BODY_H - boxH;
+    const nDots = dotsPerQuestion > 0
+      ? dotsPerQuestion
+      : Math.max(1, Math.min(DOTS_FULL_PAGE, Math.round(availH / DOTS_LINE_TWIPS)));
     let anchor: XNode = boxP as XNode;
-    for (let k = 0; k < dotsPerQuestion; k++) {
-      const dots = makeVodDots(doc);
+    for (let k = 0; k < nDots; k++) {
+      const dots = makeVodDots(doc, DOTS_LINE_TWIPS);
       anchor.parentNode!.insertBefore(dots as XNode, anchor.nextSibling);
       anchor = dots as XNode;
     }
+    // Dòng chấm nằm trong ô bảng cao cố định = chiều cao khả dụng → Word cắt phần
+    // vượt quá mép dưới thay vì đẩy sang trang mới.
 
     stats.groups++;
     stats.questions++;
-    stats.dotRows += dotsPerQuestion;
+    stats.dotRows += nDots;
     if (g.id) stats.ids.push(g.id);
     else stats.missingIds.push(g.qnum);
   }
@@ -839,6 +917,109 @@ export function applyVodLayout(
   }
 
   return stats;
+}
+
+/**
+ * Ước lượng chiều cao (twips) của 1 paragraph trong khung — để tính số dòng chấm
+ * vừa đúng 1 trang.
+ *
+ * PITFALL: câu có HÌNH VẼ/ĐỒ THỊ (w:drawing / w:object OLE lớn) không thể ước
+ * lượng theo số ký tự — nếu bỏ qua, chiều cao khung bị tính thiếu → số dòng chấm
+ * tính thừa → tràn sang trang sau sinh trang trắng (bug gặp ở câu có hình).
+ * Đọc kích thước thật từ wp:extent cy (EMU; 1 twip = 635 EMU) và w:shape style.
+ */
+function estimateParaHeightTwips(p: XElement): number {
+  // BẢNG (ngữ liệu) trong khung: mỗi hàng ≈ 380 twips
+  if (isW(p, "tbl")) {
+    const rows = childrenOf(p).filter((c) => isW(c, "tr")).length || 3;
+    return rows * 380 + 200;
+  }
+  const chars = paragraphText(p).length;
+  // Hệ số hiệu chỉnh theo số liệu ĐO trên PDF render thật (không phải lý thuyết):
+  // khung ~15 dòng chữ cao 94.5pt = 1890 twips → ~126 twips/dòng; lấy 150 để
+  // chừa biên an toàn cho công thức OLE (cao hơn chữ thường).
+  // Hệ số hiệu chỉnh TỪ SỐ LIỆU ĐO THẬT trên PDF (10 trang mẫu, câu 114–419 ký tự):
+  //   boxH_pt ≈ ceil(chars/105) * 45 + 60  → quy ra twips: dòng = 900, biên = 1200.
+  // (Trước đây ước 340 twips/dòng → khung bị tính cao gấp ~2 lần thực tế, nên số
+  //  dòng kẻ chấm bị cắt bớt và chừa trống 1/3 trang.)
+  // Công thức hiệu chỉnh từ PDF thật: mỗi dòng chữ (chứa cả công thức OLE) cao
+  // ~18pt = 360 twips, ~65 ký tự/dòng ở TNR 14 khổ 30 cm; +1 dòng cho hàng đáp án;
+  // +14pt (280 twips) cho inset/viền của shape.
+  const textH = Math.max(1, Math.ceil(chars / 105)) * 900;
+
+  // chiều cao ảnh/đồ thị nhúng (drawing: wp:extent cy)
+  let visualH = 0;
+  let maxVisualH = 0;
+  const walk = (n: XNode): void => {
+    for (const c of childrenOf(n)) {
+      const ln = localName(c);
+      if (ln === "extent") {
+        const cy = attrAny(c as XElement, "cy");
+        const v = cy ? parseInt(cy, 10) : 0;
+        // 1 twip = 635 EMU; +8% cho khoảng dòng bao quanh ảnh
+        if (v > 0) maxVisualH = Math.max(maxVisualH, Math.round((v / 635) * 1.08));
+      } else if (ln === "shape") {
+        const style = attrAny(c as XElement, "style") || "";
+        const m = /height\s*:\s*([\d.]+)pt/i.exec(style);
+        if (m) maxVisualH = Math.max(maxVisualH, Math.round(parseFloat(m[1]) * 20 * 1.08));
+      }
+      walk(c);
+    }
+  };
+  walk(p);
+  // Ảnh/đồ thị lớn nằm CHUNG paragraph với câu hỏi → chiều cao paragraph = ảnh,
+  // KHÔNG cộng dồn (cộng dồn làm ước lượng vống → cắt bớt dòng chấm oan).
+  visualH = maxVisualH;
+
+  // Mỗi công thức OLE (Equation) hiển thị như 1 "khối" giữa dòng: cộng thêm
+  // 260 twips/công thức (đo từ PDF: câu 4 có đồ thị lớn; câu nhiều phân số làm
+  // khung cao hơn hẳn ước lượng theo ký tự).
+  let nObj = 0;
+  const countObj = (n: XNode): void => {
+    for (const c of childrenOf(n)) {
+      if (localName(c) === "object" || localName(c) === "pict") nObj++;
+      countObj(c);
+    }
+  };
+  countObj(p);
+  const objH = Math.min(2400, nObj * 150);
+
+  return Math.max(textH + objH, visualH, 340) + (visualH > 0 ? 300 : 0);
+}
+
+/** Đọc attribute không phân biệt namespace (xmldom/native) */
+function attrAny(e: XElement, name: string): string | null {
+  const withNs = e.getAttributeNS?.(null, name);
+  if (withNs) return withNs;
+  const any = (e as unknown as { getAttribute?: (n: string) => string | null }).getAttribute;
+  return any ? any.call(e, name) : null;
+}
+
+/**
+ * Ước lượng chiều cao các BẢNG nằm ngay TRƯỚC khung câu hỏi (bảng ngữ liệu:
+ * bảng tần số, bảng số liệu… nằm ngoài khung theo mẫu). Mỗi hàng ≈ 360 twips.
+ */
+function tableHeightBefore(body: XElement, boxP: XElement): number {
+  // XNode của dự án chỉ có nextSibling → duyệt xuôi từ body, dừng tại boxP,
+  // và chỉ cộng các BẢNG đứng ngay trước (cách boxP ≤ 3 phần tử).
+  const kids = childrenOf(body);
+  const at = kids.indexOf(boxP);
+  if (at <= 0) return 0;
+  let total = 0;
+  for (let k = at - 1, guard = 0; k >= 0 && guard < 3; k--, guard++) {
+    const el = kids[k];
+    if (isW(el, "tbl")) {
+      const rows = childrenOf(el).filter((c) => isW(c, "tr")).length || 3;
+      total += rows * 380 + 200;
+      continue;
+    }
+    if (isW(el, "p")) {
+      const txt = paragraphText(el).trim();
+      if (txt.length > 40) break; // gặp nội dung câu trước → dừng
+    }
+    break;
+  }
+  return total;
 }
 
 /** Tìm w:txbxContent bên trong shape của khung */
