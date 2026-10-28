@@ -287,6 +287,7 @@ export function convertDom(
         const vstats = applyVodLayout(keptBlocks, body, doc);
         result.notes.push(
           `VOD: ${vstats.groups} khung câu hỏi (${vstats.dotRows} dòng chấm), ` +
+            `${vstats.picturesMovedToRight} câu có hình → hình ra cột phải, ` +
             `${vstats.highlightRemoved} highlight đã bỏ, ${result.answersRemoved} block đáp án/hướng dẫn đã xóa.`,
         );
         if (vstats.missingIds.length) {

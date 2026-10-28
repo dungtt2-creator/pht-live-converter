@@ -41,11 +41,16 @@ const PG_MAR = 567;
 /** Bề rộng vùng soạn thảo = 18144 - 2×567 = 17010 twips (đúng lề trang) */
 const TEXT_W = 18144 - PG_MAR * 2;
 /**
- * Bề rộng khung = TOÀN BỘ bề rộng vùng soạn thảo (17010 twips = 30 cm), để đề bài
- * + 4 phương án luôn nằm gọn trong khung, không tràn/đè ra ngoài viền, và cân
- * với dòng kẻ chấm bên dưới (cùng bắt đầu/kết thúc ở 2 lề).
+ * Bề rộng khung.
+ *  - Câu KHÔNG có hình vẽ: khung chiếm ~1/2 bề rộng trang (yêu cầu 10-2026).
+ *  - Câu CÓ hình vẽ: khung ~55% bên TRÁI, hình đặt ở cột PHẢI ngoài khung.
+ * Dòng kẻ chấm luôn chạy hết bề rộng trang (17010 twips) ở dưới cùng.
  */
-const BOX_W = TEXT_W;
+const BOX_W_FULL = TEXT_W;
+const BOX_W_HALF = Math.round(TEXT_W * 0.5);      // câu không có hình: 1/2 trang
+const BOX_W_WITH_IMG = Math.round(TEXT_W * 0.55); // câu có hình: khung trái + hình phải
+/** Bề rộng khung mặc định (dùng cho hàm dựng khung khi không truyền) */
+const BOX_W = BOX_W_HALF;
 /**
  * Góc bo NHẸ (vuông hơn hẳn mẫu cũ 10923f): arcsize 3000f ≈ 3% cạnh ngắn —
  * bo mềm 4 góc nhưng nhìn vẫn là khung chữ nhật (yêu cầu "bo nhẹ, tránh bo tròn quá nhiều").
@@ -171,7 +176,7 @@ export function makeVodDots(doc: XDocument, lineTw = 360): XElement {
  * - Shape INLINE trong 1 paragraph (không floating): mọi thứ chèn sau tự chảy
  *   xuống dưới khung, không đè lên nhau (floating đã thử → text chồng nhau).
  */
-function makeVodQuestionBox(doc: XDocument, pageBreakBefore = false): XElement {
+function makeVodQuestionBox(doc: XDocument, pageBreakBefore = false, boxW = BOX_W): XElement {
   const p = el(doc, "p");
   const pPr = el(doc, "pPr");
   // 1 câu/1 trang: dùng pageBreakBefore trên CHÍNH paragraph của khung (không
@@ -186,7 +191,7 @@ function makeVodQuestionBox(doc: XDocument, pageBreakBefore = false): XElement {
   const pict = el(doc, "pict");
   const shape = elVml(doc, "roundrect", {
     arcsize: ARC_SIZE,
-    style: `width:${(BOX_W / 1440).toFixed(2)}in`,
+    style: `width:${(boxW / 1440).toFixed(2)}in`,
     fillcolor: "#FFFFFF",
     strokecolor: `#${VOD_BORDER}`,
     strokeweight: "1pt",
@@ -519,6 +524,7 @@ const CHOICE_RE = /(?:^|[\s\u00A0\t.．,;:)\]}])([A-D])\s*[.)]\s*/gu;
 function mergeChoicesIntoOneLine(
   choiceParas: XElement[],
   doc: XDocument,
+  boxW = BOX_W,
 ): { merged: XElement | null; labels: number } {
   if (!choiceParas.length) return { merged: null, labels: 0 };
 
@@ -587,7 +593,7 @@ function mergeChoicesIntoOneLine(
   // 4 cột đều nhau: tab stop cho B/C/D tại step, 2·step, 3·step (A nằm ở lề trái,
   // KHÔNG cần tab). Bỏ tab stop tại 0 vì Word bỏ qua tab trỏ về đúng vị trí hiện tại
   // → cả 4 đáp án bị dồn thành nhiều dòng.
-  const step = Math.floor(BOX_W / present.length);
+  const step = Math.floor(boxW / present.length);
   const p = el(doc, "p");
   const pPr = el(doc, "pPr");
   const tabs = el(doc, "tabs");
@@ -661,6 +667,8 @@ export interface VodConvertStats {
   headerRemoved: number;
   /** số câu đã dồn 4 đáp án về 1 dòng */
   choicesMerged: number;
+  /** số câu đã đưa hình vẽ ra ngoài khung (cột phải) */
+  picturesMovedToRight: number;
 }
 
 /**
@@ -711,7 +719,7 @@ export function applyVodLayout(
 
   const stats: VodConvertStats = {
     questions: 0, groups: 0, ids: [], missingIds: [], highlightRemoved: 0, dotRows: 0,
-    headerRemoved: 0, choicesMerged: 0,
+    headerRemoved: 0, choicesMerged: 0, picturesMovedToRight: 0,
   };
   stats.highlightRemoved = removeHighlights(body);
 
@@ -801,8 +809,28 @@ export function applyVodLayout(
   // ---- 3) Dựng khung bo góc + nội dung + dòng chấm cho từng câu
   let firstGroup = true;
   for (const g of groups) {
+    // 3-before) PHÁT HIỆN HÌNH VẼ của câu này.
+    //  - Có hình ⇒ khung hẹp (~55% trái) + hình đặt cột PHẢI ngoài khung.
+    //  - Không có hình ⇒ khung 1/2 bề rộng trang.
+    const picParas: XElement[] = [];
+    for (const e of g.elems) {
+      if (!isW(e, "p")) continue;
+      if (isBigPicture(e)) {
+        const txt = paragraphText(e).trim();
+        if (txt.length > 0) {
+          // hình nằm chung paragraph với chữ câu hỏi → tách hình ra paragraph riêng
+          const picP = extractPicturePara(e, doc);
+          if (picP) picParas.push(picP);
+        } else {
+          picParas.push(e); // paragraph chỉ có hình → đưa nguyên ra ngoài
+        }
+      }
+    }
+    const hasPicture = picParas.length > 0;
+    const boxW = hasPicture ? BOX_W_WITH_IMG : BOX_W_HALF;
+
     // Câu đầu giữ nguyên trang 1; các câu sau bắt đầu trang mới (1 câu/trang).
-    const boxP = makeVodQuestionBox(doc, !firstGroup);
+    const boxP = makeVodQuestionBox(doc, !firstGroup, boxW);
     firstGroup = false;
     const first = g.elems[0];
     first.parentNode!.insertBefore(boxP as XNode, first as XNode);
@@ -811,13 +839,15 @@ export function applyVodLayout(
     let mergedChoices: XElement | null = null;
     let choiceLabels = 0;
     if (g.choiceParas.length) {
-      const res = mergeChoicesIntoOneLine(g.choiceParas, doc);
+      const res = mergeChoicesIntoOneLine(g.choiceParas, doc, boxW);
       mergedChoices = res.merged;
       choiceLabels = res.labels;
     }
 
     // 3b) Chuyển các paragraph còn lại vào txbxContent của khung
     const content = findTxbxContent(boxP);
+    const picSet = new Set<XElement>(picParas);
+    const skip = new Set<XElement>(g.choiceParas);
     if (content) {
       for (const c of childrenOf(content)) {
         if (isW(c, "p") && paragraphText(c).trim() === "" && !hasVisual(c)) {
@@ -825,9 +855,8 @@ export function applyVodLayout(
           break;
         }
       }
-      const skip = new Set<XElement>(g.choiceParas);
       for (const e of g.elems) {
-        if (skip.has(e)) continue;
+        if (skip.has(e) || picSet.has(e)) continue;
         e.parentNode?.removeChild(e as XNode);
         content.appendChild(e);
       }
@@ -838,6 +867,19 @@ export function applyVodLayout(
     }
     // dọn paragraph phương án cũ còn sót trong body (đã thay bằng bản gộp)
     for (const cp of g.choiceParas) cp.parentNode?.removeChild(cp as XNode);
+    // gỡ paragraph chỉ-có-hình khỏi body (sẽ đặt lại vào cột phải nếu có hình)
+    for (const pp of picParas) pp.parentNode?.removeChild(pp as XNode);
+
+    // 3b2) CÓ HÌNH: thay paragraph chứa khung bằng bảng 2 cột KHÔNG viền
+    //      (trái = khung câu hỏi + đáp án, phải = hình vẽ) → hình nằm ngoài khung.
+    let boxAnchor: XElement = boxP;
+    if (hasPicture) {
+      // Chèn bảng 2 cột vào ĐÚNG vị trí khung cũ TRƯỚC khi nhấc khung ra khỏi body,
+      // nếu không bảng không có parentNode → insertBefore(null) crash.
+      const two = makeTwoColumnLayout(doc, boxP, picParas, boxW);
+      boxAnchor = two;
+      stats.picturesMovedToRight++;
+    }
 
     // 3c) Dòng kẻ chấm ngay SAU khung — số dòng TÍNH ĐỘNG để phủ kín phần còn
     //     lại của trang tới mép lề dưới (mỗi câu 1 trang).
@@ -860,13 +902,18 @@ export function applyVodLayout(
     // khung câu 132 ký tự + 4 đáp án cao 106pt = 2120 twips; ước lượng ký tự cho
     // 1200 twips → cần hệ số nhân để khớp. Hệ số 0.6 (trước đây ước CAO gấp ~1.7
     // lần) để số dòng chấm phủ kín phần còn lại của trang.
-    const estH = g.elems.reduce((acc, e) => acc + estimateParaHeightTwips(e), 0);
+    // Khung hẹp (1/2 trang) làm chữ wrap gấp ~2 lần số dòng so với khung full-width,
+    // nên hệ số chiều cao phải nhân theo tỉ lệ bề rộng khung.
+    const widthFactor = TEXT_W / boxW; // 2.0 khi khung 1/2 trang, 1.8 khi có hình
+    const estH = g.elems.reduce(
+      (acc, e) => acc + estimateParaHeightTwips(e) * widthFactor, 0,
+    );
     const boxH = estH * 0.6 + 900 + leadingTableH + 900; // +900 = 1 dòng an toàn
     const availH = PAGE_BODY_H - boxH;
     const nDots = dotsPerQuestion > 0
       ? dotsPerQuestion
       : Math.max(1, Math.min(DOTS_FULL_PAGE, Math.round(availH / DOTS_LINE_TWIPS)));
-    let anchor: XNode = boxP as XNode;
+    let anchor: XNode = boxAnchor as XNode;
     for (let k = 0; k < nDots; k++) {
       const dots = makeVodDots(doc, DOTS_LINE_TWIPS);
       anchor.parentNode!.insertBefore(dots as XNode, anchor.nextSibling);
@@ -1023,6 +1070,204 @@ function tableHeightBefore(body: XElement, boxP: XElement): number {
 }
 
 /** Tìm w:txbxContent bên trong shape của khung */
+/**
+ * Nhận diện HÌNH VẼ / ĐỒ THỊ của đề (để đưa ra ngoài khung bên phải).
+ *
+ * Phân biệt với CÔNG THỨC MathType (w:object + v:shape + o:OLEObject) — công thức
+ * cũng là "ảnh" nhưng phải Ở TRONG khung. Dấu hiệu phân biệt:
+ *  - Hình vẽ dùng `w:drawing` + `pic:pic` (DrawingML) hoặc `v:imagedata` KHÔNG có
+ *    `w:object` bao ngoài, và KHÔNG có `<o:OLEObject>`.
+ *  - Ngưỡng kích thước dự phòng: rộng > 60pt hoặc cao > 50pt (công thức chỉ
+ *    11–56pt, và công thức luôn nằm trong w:object nên đã bị loại ở trên).
+ */
+function isBigPicture(p: XElement): boolean {
+  let big = false;
+  const walk = (n: XNode): void => {
+    if (big) return;
+    for (const c of childrenOf(n)) {
+      const ln = localName(c);
+      if (ln === "object") {
+        // w:object = công thức/OLE → KHÔNG phải hình vẽ cần đưa ra ngoài
+        continue;
+      }
+      // CHỈ dựa vào KÍCH THƯỚC: hình vẽ/đồ thị của đề luôn lớn (>=80pt ở 1 chiều).
+      // Không dùng "có w:drawing là hình" — ảnh công thức nhỏ cũng có thể nằm trong
+      // drawing, nhận nhầm sẽ làm MỌI câu thành bố cục 2 cột (bug gặp).
+      if (ln === "extent") {
+        const cx = parseInt(attrAny(c as XElement, "cx") || "0", 10);
+        const cy = parseInt(attrAny(c as XElement, "cy") || "0", 10);
+        if (cy / 12700 >= 80 || cx / 12700 >= 120) big = true;
+      } else if (ln === "shape") {
+        const style = attrAny(c as XElement, "style") || "";
+        const m = /height\s*:\s*([\d.]+)pt/i.exec(style);
+        if (m && parseFloat(m[1]) >= 80) big = true;
+      }
+      walk(c);
+    }
+  };
+  walk(p);
+  return big;
+}
+
+/**
+ * Tách HÌNH ra khỏi paragraph: tạo paragraph mới chỉ chứa run có ảnh (giữ
+ * r:embed/r:id nên ảnh vẫn hiển thị), trả về paragraph đó. Dùng cho trường hợp
+ * hình nằm chung paragraph với chữ câu hỏi (Câu 46 của đề HSA).
+ */
+function extractPicturePara(src: XElement, doc: XDocument): XElement | null {
+  const picRuns: XElement[] = [];
+  const walk = (n: XNode): void => {
+    for (const c of childrenOf(n)) {
+      if (localName(c) === "r" && isBigPicture(c)) {
+        picRuns.push(c);
+        continue;
+      }
+      walk(c);
+    }
+  };
+  walk(src);
+  if (!picRuns.length) return null;
+  const p = el(doc, "p");
+  const pPr = el(doc, "pPr");
+  pPr.appendChild(el(doc, "jc", { "w:val": "center" }));
+  pPr.appendChild(el(doc, "spacing", { "w:before": "0", "w:after": "0", "w:line": "240", "w:lineRule": "auto" }));
+  p.appendChild(pPr);
+  for (const r of picRuns) {
+    r.parentNode?.removeChild(r as XNode);
+    p.appendChild(r as XNode);
+  }
+  return p;
+}
+
+/**
+ * Bố cục 2 cột cho câu CÓ HÌNH: bảng 1 hàng × 2 ô, không viền.
+ *  - ô TRÁI (boxW): paragraph chứa khung câu hỏi + đáp án.
+ *  - ô PHẢI: các paragraph hình (căn giữa) → hình nằm NGOÀI khung, bên phải.
+ * Trả về bảng để caller dùng làm mốc chèn dòng kẻ chấm.
+ */
+/** Bề rộng cột phải (twips) — dùng để thu nhỏ hình cho vừa */
+function rightColWidth(boxW: number): number {
+  return TEXT_W - boxW - 200;
+}
+
+/**
+ * Thu nhỏ ảnh cho VỪA cột phải (nếu ảnh rộng hơn cột, Word sẽ tràn ra ngoài trang).
+ * Giữ tỉ lệ: scale = min(1, maxW_EMU / cx). Cập nhật cả wp:extent và a:ext.
+ */
+function fitPictureWidth(picPara: XElement, maxWTwips: number): void {
+  const maxEmu = maxWTwips * 635;
+  const walk = (n: XNode): void => {
+    for (const c of childrenOf(n)) {
+      const ln = localName(c);
+      if (ln === "extent" || ln === "ext") {
+        const cxRaw = attrAny(c as XElement, "cx");
+        const cyRaw = attrAny(c as XElement, "cy");
+        const cx = cxRaw ? parseInt(cxRaw, 10) : 0;
+        const cy = cyRaw ? parseInt(cyRaw, 10) : 0;
+        if (cx > maxEmu && cx > 0) {
+          const scale = maxEmu / cx;
+          (c as XElement).setAttribute("cx", String(Math.round(maxEmu)));
+          (c as XElement).setAttribute("cy", String(Math.round(cy * scale)));
+        }
+      }
+      walk(c);
+    }
+  };
+  walk(picPara);
+}
+
+function makeTwoColumnLayout(
+  doc: XDocument,
+  boxP: XElement,
+  picParas: XElement[],
+  boxW: number,
+): XElement {
+  const rightW = TEXT_W - boxW - 200; // trừ khe giữa 2 cột
+  // Giữ vị trí chèn = ngay trước khung câu hỏi trong body
+  const host = boxP.parentNode;
+  const hostNext = boxP.nextSibling;
+  const tbl = el(doc, "tbl");
+  const tblPr = el(doc, "tblPr");
+  tblPr.appendChild(el(doc, "tblW", { "w:w": String(TEXT_W), "w:type": "dxa" }));
+  tblPr.appendChild(el(doc, "jc", { "w:val": "left" }));
+  const borders = el(doc, "tblBorders");
+  for (const side of ["top", "left", "bottom", "right", "insideH", "insideV"]) {
+    borders.appendChild(el(doc, side, { "w:val": "none", "w:sz": "0", "w:space": "0", "w:color": "auto" }));
+  }
+  tblPr.appendChild(borders);
+  tblPr.appendChild(el(doc, "tblLayout", { "w:type": "fixed" }));
+  tblPr.appendChild(el(doc, "tblCellMar"));
+  tblPr.appendChild(el(doc, "tblLook", { "w:val": "0000" }));
+  tbl.appendChild(tblPr);
+
+  // Word cộng inset của shape (8pt = 160 twips mỗi bên) + viền vào bề rộng cột,
+  // nên cột trái phải rộng hơn khung một khoản; nếu không Word tự nới cột và
+  // hình bị đẩy lệch/tràn (bug gặp: cột 9356 thay vì boxW).
+  const leftColW = boxW + 400;
+  const realRightW = TEXT_W - leftColW;
+  const grid = el(doc, "tblGrid");
+  grid.appendChild(el(doc, "gridCol", { "w:w": String(leftColW) }));
+  grid.appendChild(el(doc, "gridCol", { "w:w": String(realRightW) }));
+  tbl.appendChild(grid);
+
+  const tr = el(doc, "tr");
+  const trPr = el(doc, "trPr");
+  trPr.appendChild(el(doc, "cantSplit"));
+  tr.appendChild(trPr);
+
+  // ô TRÁI: khung câu hỏi (chuyển từ body vào)
+  const tcL = el(doc, "tc");
+  const tcPrL = el(doc, "tcPr");
+  tcPrL.appendChild(el(doc, "tcW", { "w:w": String(leftColW), "w:type": "dxa" }));
+  const marL = el(doc, "tcMar");
+  for (const s of ["top", "left", "bottom", "right"]) {
+    marL.appendChild(el(doc, s, { "w:w": "0", "w:type": "dxa" }));
+  }
+  tcPrL.appendChild(marL);
+  tcL.appendChild(tcPrL);
+  boxP.parentNode?.removeChild(boxP as XNode);
+  tcL.appendChild(boxP as XNode);
+  tr.appendChild(tcL);
+
+  // ô PHẢI: hình vẽ (căn giữa)
+  const tcR = el(doc, "tc");
+  const tcPrR = el(doc, "tcPr");
+  tcPrR.appendChild(el(doc, "tcW", { "w:w": String(realRightW), "w:type": "dxa" }));
+  const marR = el(doc, "tcMar");
+  marR.appendChild(el(doc, "left", { "w:w": "170", "w:type": "dxa" }));
+  for (const s of ["top", "bottom", "right"]) {
+    marR.appendChild(el(doc, s, { "w:w": "0", "w:type": "dxa" }));
+  }
+  tcPrR.appendChild(marR);
+  tcPrR.appendChild(el(doc, "vAlign", { "w:val": "top" }));
+  tcR.appendChild(tcPrR);
+  if (picParas.length) {
+    for (const pp of picParas) {
+      // Thu nhỏ hình vừa cột phải — ảnh gốc rộng 540pt sẽ tràn ra ngoài trang 32cm
+      fitPictureWidth(pp, rightColWidth(boxW) - 200);
+      const pPr = childrenOf(pp).find((c) => isW(c, "pPr"));
+      if (pPr) {
+        for (const c of childrenOf(pPr)) {
+          if (isW(c, "jc")) pPr.removeChild(c as XNode);
+        }
+        pPr.appendChild(el(doc, "jc", { "w:val": "center" }));
+      }
+      tcR.appendChild(pp as XNode);
+    }
+  } else {
+    tcR.appendChild(el(doc, "p"));
+  }
+  tr.appendChild(tcR);
+
+  tbl.appendChild(tr);
+  // Chèn vào body tại đúng vị trí khung cũ (khung đã được chuyển vào ô trái nên
+  // parentNode của nó là ô, không dùng được để chèn).
+  if (host) {
+    host.insertBefore(tbl as XNode, hostNext as XNode | null);
+  }
+  return tbl;
+}
+
 function findTxbxContent(boxP: XElement): XElement | null {
   let found: XElement | null = null;
   const walk = (node: XNode): void => {
