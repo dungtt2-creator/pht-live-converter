@@ -1,14 +1,15 @@
 "use client";
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import { convertDocx, outputFileName } from "@/lib/pipeline";
+import { convertDocx, outputFileName, outputFileNameKeepCase } from "@/lib/pipeline";
 import type { ConvertResult } from "@/lib/converter";
 
 type Phase = "idle" | "converting" | "done" | "error";
 
 interface Payload {
   name: string;
-  pht: ArrayBuffer;
+  /** null ở chế độ VOD (chỉ xuất Tài liệu dạy học) */
+  pht: ArrayBuffer | null;
   live: ArrayBuffer;
   phtResult: ConvertResult | null;
   liveResult: ConvertResult | null;
@@ -37,6 +38,13 @@ export default function Converter() {
     const [payload, setPayload] = useState<Payload | null>(null);
     const inputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
+  /**
+   * Chế độ xuất bản:
+   *  - "vod"  : Tài liệu dạy học ghi hình (Template VOD — khổ 32 × 18 cm, TNR 14,
+   *             câu hỏi | dòng chấm). Tên file giữ nguyên tên đề + hậu tố _Live.
+   *  - "exam" : Bản Live/PHT theo mẫu kỳ thi cũ (khung wave).
+   */
+  const [layout, setLayout] = useState<"vod" | "exam">("vod");
 
   const run = useCallback(async (file: File) => {
     if (!file.name.toLowerCase().endsWith(".docx")) {
@@ -51,15 +59,16 @@ export default function Converter() {
       const ab = await file.arrayBuffer();
       const t0 = performance.now();
       const out = await convertDocx(ab, {
-              modes: ["pht", "live"],
+              modes: layout === "vod" ? ["live"] : ["pht", "live"],
               fileName: file.name,
               useFileTemplate: true, // dùng file template thật (TSA default)
+              layout,
             });
       const ms = Math.round(performance.now() - t0);
       const base = file.name.replace(/\.docx?$/i, "");
       setPayload({
         name: base,
-        pht: out.pht!,
+        pht: out.pht,
         live: out.live!,
         phtResult: out.phtResult,
         liveResult: out.liveResult,
@@ -73,7 +82,7 @@ export default function Converter() {
       setErr(e instanceof Error ? e.message : "Lỗi không xác định khi xử lý file.");
       setPhase("error");
     }
-  }, []);
+  }, [layout]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -97,19 +106,58 @@ export default function Converter() {
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-10">
-      <header className="mb-8 text-center">
+      <header className="mb-6 text-center">
               <h1 className="text-3xl font-bold text-slate-900">
-                Chuyển tài liệu Word → Phiếu học tập &amp; Tài liệu Live
+                Chuyển file đề Word → Tài liệu Live cho giáo viên
               </h1>
               <p className="mt-3 text-sm leading-relaxed text-slate-500">
-                Upload file <b>.docx</b> thô của giáo viên: hệ thống tự tách{" "}
-                <b>Phiếu học tập</b> (kiến thức cô đọng + chỗ trống cho học sinh, bỏ đáp
-                án/hướng dẫn) và <b>Tài liệu Live</b> (giữ nguyên 100% kiến thức gốc, bổ
-                sung vùng để giáo viên viết ở mỗi câu hỏi khi giảng dạy trực tiếp). Xử lý
-                hoàn toàn trên máy bạn — không gửi dữ liệu lên server. Tiêu đề và banner
-                của bài học được giữ nguyên như file gốc.
+                Upload file <b>.docx</b> đề của giáo viên: hệ thống chuyển sang{" "}
+                <b>đúng Template VOD</b> — khổ ngang 32 × 18 cm (16:9), Times New Roman 14,
+                mỗi câu là một khung câu hỏi kèm dòng chấm để giáo viên chữa bài khi ghi
+                hình. Xử lý hoàn toàn trên máy bạn — không gửi dữ liệu lên server.
               </p>
             </header>
+
+      <div className="mb-5 rounded-2xl border border-slate-200 bg-white p-4">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Chế độ xuất bản
+        </p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => setLayout("vod")}
+            className={`rounded-xl border p-3 text-left transition ${
+              layout === "vod"
+                ? "border-sky-500 bg-sky-50 ring-1 ring-sky-300"
+                : "border-slate-200 hover:border-sky-300"
+            }`}
+          >
+            <span className="block text-sm font-semibold text-slate-900">
+              Template VOD (ghi hình)
+            </span>
+            <span className="mt-1 block text-xs leading-relaxed text-slate-500">
+              32 × 18 cm · Times New Roman 14 · câu hỏi + dòng chấm. Tên file:
+              &lt;tên đề&gt;_Live.docx
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setLayout("exam")}
+            className={`rounded-xl border p-3 text-left transition ${
+              layout === "exam"
+                ? "border-violet-500 bg-violet-50 ring-1 ring-violet-300"
+                : "border-slate-200 hover:border-violet-300"
+            }`}
+          >
+            <span className="block text-sm font-semibold text-slate-900">
+              Bản kỳ thi (PHT + Live cũ)
+            </span>
+            <span className="mt-1 block text-xs leading-relaxed text-slate-500">
+              Khung wave theo mẫu kỳ thi, xuất cả Phiếu học tập và Tài liệu Live.
+            </span>
+          </button>
+        </div>
+      </div>
 
             <div
         onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
@@ -161,14 +209,17 @@ export default function Converter() {
         <div className="mt-6 space-y-4">
           <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
             ✅ Xử lý xong <b>{payload.name}</b> trong {payload.ms} ms —{" "}
-            {stats.q} câu hỏi phát hiện, {stats.blanks} chỗ trống tạo, {stats.removed} khối
-            đáp án/hướng dẫn đã loại khỏi phiếu
+            {stats.q} câu hỏi phát hiện
+            {layout === "vod"
+              ? `, ${payload.liveResult?.answersRemoved ?? 0} khối đáp án/hướng dẫn đã loại`
+              : `, ${stats.blanks} chỗ trống tạo, ${stats.removed} khối đáp án/hướng dẫn đã loại khỏi phiếu`}
             {stats.tags > 0 &&
               `, đã tự động thêm tag [HOCMAI] cho ${stats.tags} câu chưa chuẩn hóa`}
             .
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className={`grid gap-4 ${payload.pht ? "sm:grid-cols-2" : ""}`}>
+            {payload.pht && (
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <h3 className="text-base font-semibold text-slate-900">📝 Phiếu học tập</h3>
               <p className="mt-1 min-h-[3.5rem] text-xs leading-relaxed text-slate-500">
@@ -176,21 +227,30 @@ export default function Converter() {
                 gạch chân), câu hỏi bài tập; bỏ phần đáp án &amp; hướng dẫn giải.
               </p>
               <button
-                onClick={() => download(payload.pht, outputFileName(payload.name, "pht"))}
+                onClick={() => payload.pht && download(payload.pht, outputFileName(payload.name, "pht"))}
                 className="mt-3 w-full rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700"
               >
                 ⬇ Tải PHT (.docx)
               </button>
             </div>
+            )}
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <h3 className="text-base font-semibold text-slate-900">🎤 Tài liệu Live</h3>
               <p className="mt-1 min-h-[3.5rem] text-xs leading-relaxed text-slate-500">
-                Cho giáo viên: giữ nguyên 100% kiến thức gốc, bổ sung vùng để giáo
-                viên viết ở mỗi câu hỏi khi giảng dạy trực tiếp.
+                {layout === "vod"
+                  ? "Template VOD: khổ 32 × 18 cm (16:9), Times New Roman 14, mỗi câu là khung câu hỏi kèm dòng chấm để giáo viên chữa bài khi ghi hình."
+                  : "Cho giáo viên: giữ nguyên 100% kiến thức gốc, bổ sung vùng để giáo viên viết ở mỗi câu hỏi khi giảng dạy trực tiếp."}
               </p>
               <button
-                onClick={() => download(payload.live, outputFileName(payload.name, "live"))}
+                onClick={() =>
+                  download(
+                    payload.live,
+                    layout === "vod"
+                      ? outputFileNameKeepCase(payload.name, "Live")
+                      : outputFileName(payload.name, "live"),
+                  )
+                }
                 className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-700"
               >
                 ⬇ Tải Live (.docx)

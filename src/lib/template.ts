@@ -3,7 +3,7 @@
  * Mỗi template = màu chủ đạo + dòng nhận diện in đầu tài liệu + phong cách.
  */
 
-export type TemplateId = "tnthpt" | "hsa" | "qda" | "tsa" | "topclass";
+export type TemplateId = "tnthpt" | "hsa" | "qda" | "tsa" | "topclass" | "vod";
 
 export interface ExamTemplate {
   id: TemplateId;
@@ -53,6 +53,13 @@ export const TEMPLATES: ExamTemplate[] = [
     color: "00A650",
     header: "TOPCLASS – LUYỆN THI CÙNG HOCMAI",
     desc: "Màu xanh lá của hệ thống Topclass",
+  },
+  {
+    id: "vod",
+    label: "VOD (ghi hình)",
+    color: "00B0F0",
+    header: "TÀI LIỆU DẠY HỌC GHI HÌNH (VOD)",
+    desc: "Khổ ngang 32 × 18 cm (16:9), Times New Roman 14, câu hỏi | dòng chấm",
   },
 ];
 

@@ -17,6 +17,8 @@ export const TEMPLATE_FILES: Record<TemplateId, { pht: string; live: string }> =
   qda: { pht: "pht.docx", live: "live-qda.docx" },
   tsa: { pht: "pht.docx", live: "live-tsa.docx" },
   topclass: { pht: "pht.docx", live: "live-topclass.docx" },
+  // Template VOD thật (32×18 cm) — dùng cho layout "vod" (pipeline wrapWithVodTemplate)
+  vod: { pht: "vod.docx", live: "vod.docx" },
 };
 
 import { loadTemplate, type LoadedTemplate } from "./template-loader";

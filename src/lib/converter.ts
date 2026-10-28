@@ -20,6 +20,7 @@ import type { DocBlock, Block } from "./model";
 import { applyBlanks, findBlankRegions } from "./blanker";
 import { addHocmaiTags } from "./tag-hocmai";
 import { getTemplate, type TemplateId } from "./template";
+import { applyVodLayout } from "./template-vod";
 import { fixHeadingKeepNext, cleanupSpacers } from "./pagination";
 
 export type OutputMode = "pht" | "live";
@@ -189,6 +190,7 @@ export function convertDom(
   mode: OutputMode,
   templateId: TemplateId = "tsa",
   useFileTemplate = false,
+  layout: "exam" | "vod" = "exam",
 ): ConvertResult {
   const notes: string[] = [];
     const result: ConvertResult = {
@@ -271,6 +273,28 @@ export function convertDom(
       result.hocmaiTagsAdded = addHocmaiTags(blocks, body, doc, tpl.color);
       if (result.hocmaiTagsAdded > 0) {
         notes.push(`Đã tự động thêm tag [HOCMAI] cho ${result.hocmaiTagsAdded} câu chưa chuẩn hóa.`);
+      }
+
+      // ----- 0b) LAYOUT VOD: khổ 32×18 cm, bảng 2 cột (câu hỏi | dòng chấm),
+      //      Times New Roman 14. Đáp án/hướng dẫn giải vẫn bị xóa như bản Live cũ. -----
+      if (layout === "vod") {
+        const { toRemove, joinAnswerBlocks } = computeRemoveSet(blocks);
+        result.answersRemoved = removeBlocks(body, idx, toRemove);
+        const joinBlanks = blankJoinAnswers(body, idx, joinAnswerBlocks);
+        if (joinBlanks > 0) notes.push(`Đã blank ${joinBlanks} dòng đáp án nối cột (giữ mẫu điền).`);
+        // blocks còn chứa cả entry đã xóa → phải prune để chỉ số khớp body hiện tại
+        const keptBlocks = blocks.filter((_, i) => !toRemove.has(i));
+        const vstats = applyVodLayout(keptBlocks, body, doc);
+        result.notes.push(
+          `VOD: ${vstats.groups} khung câu hỏi (${vstats.dotRows} dòng chấm), ` +
+            `${vstats.highlightRemoved} highlight đã bỏ, ${result.answersRemoved} block đáp án/hướng dẫn đã xóa.`,
+        );
+        if (vstats.missingIds.length) {
+          notes.push(
+            `CẢNH BÁO: ${vstats.missingIds.length} câu thiếu ID trong file gốc (Câu ${vstats.missingIds.join(", ")}) — giữ nguyên để chị bổ sung.`,
+          );
+        }
+        return result;
       }
 
       // ----- 1) Template kỳ thi: trang NGANG + margin đúng mẫu -----
@@ -562,6 +586,7 @@ export function convertParsed(
   mode: OutputMode,
   templateId: TemplateId = "tsa",
   useFileTemplate = false,
+  layout: "exam" | "vod" = "exam",
 ): ConvertResult {
-  return convertDom(blocks, body, mode, templateId, useFileTemplate);
+  return convertDom(blocks, body, mode, templateId, useFileTemplate, layout);
 }
