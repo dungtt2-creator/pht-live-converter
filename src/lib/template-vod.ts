@@ -82,6 +82,16 @@ const DOTS_FULL_PAGE = 23;
 /** Chiều cao khả dụng 1 trang (twips): 18 cm - 2×1 cm lề = 16 cm = 9072 twips */
 const PAGE_BODY_H = 10206 - PG_MAR * 2;
 
+/**
+ * GHI ĐÈ số dòng kẻ chấm theo từng câu (index 0-based theo thứ tự câu trong đề).
+ * Dùng cho chế độ 2 LƯỢT của CLI: lượt 1 render → đo phần trống thật từng trang →
+ * lượt 2 đặt đúng số dòng. Bản web không set → dùng ước lượng an toàn.
+ */
+let DOTS_OVERRIDE: number[] | null = null;
+export function setDotsOverride(list: number[] | null): void {
+  DOTS_OVERRIDE = list;
+}
+
 /** Khai báo namespace còn thiếu (file GV hiếm khi khai báo vml/mc…) */
 const NS_MAP: Record<string, string> = {
   w: "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -315,6 +325,37 @@ function flattenListBullets(p: XElement, doc: XDocument): boolean {
   if (ref) p.insertBefore(marker as XNode, ref);
   else p.appendChild(marker as XNode);
   return true;
+}
+
+/**
+ * Chèn khoảng trắng bảo vệ quanh mỗi CÔNG THỨC (OLE Equation).
+ *
+ * LÝ DO: công thức MathType hiển thị như 1 ký tự object; Word nối liền chữ hai bên
+ * nếu không có space thật ("Không" + [công thức] + "tồn" → "Khôngtồn").
+ * Đề gốc thường đã có space nhưng nằm ở run khác bị cắt khi tách nhãn đáp án.
+ * Cách xử lý: nếu run chứa công thức mà run liền trước/kế không kết thúc/mở đầu
+ * bằng khoảng trắng → thêm run " " (TNR 14) vào đúng phía thiếu.
+ */
+function ensureSpaceAroundMath(p: XElement, doc: XDocument): void {
+  const kids = childrenOf(p);
+  for (let i = 0; i < kids.length; i++) {
+    const r = kids[i];
+    if (!isW(r, "r") || !isVisualRun(r)) continue;
+    const prev = kids[i - 1];
+    const next = kids[i + 1];
+    const prevText = prev && isW(prev, "r") ? runLogicalText(prev) : "";
+    const nextText = next && isW(next, "r") ? runLogicalText(next) : "";
+    // bên TRÁI: nếu run trước có chữ mà không kết thúc bằng space
+    if (prev && isW(prev, "r") && prevText.length > 0 && !/\s$/.test(prevText)) {
+      const sp = runText(doc, " ");
+      r.parentNode!.insertBefore(sp as XNode, r as XNode);
+    }
+    // bên PHẢI: nếu run sau có chữ mà không mở đầu bằng space
+    if (next && isW(next, "r") && nextText.length > 0 && !/^\s/.test(nextText)) {
+      const sp = runText(doc, " ");
+      r.parentNode!.insertBefore(sp as XNode, next as XNode);
+    }
+  }
 }
 
 /** Xóa highlight (đánh dấu đáp án của GV) — template không dùng highlight */
@@ -567,7 +608,15 @@ function mergeChoicesIntoOneLine(
       const m = CHOICE_RE.exec(text);
       const leadOnly = text.trim().length === 0;
 
-      if (leadOnly) continue; // run chỉ có tab/khoảng trắng → bỏ
+      if (leadOnly) {
+        // Run CHỈ có khoảng trắng: file đề tách chữ thành nhiều run, space nằm riêng
+        // ("Không" | " " | "tồn" | " " | "tại"). BỎ các run này làm chữ DÍNH NHAU
+        // ("Khôngtồntại") — lỗi user báo ở trang 35. Giữ space bằng run chuẩn hóa.
+        if (text.includes(" ") && cur.label && !text.includes("\t")) {
+          push(cur.label, runText(doc, " "));
+        }
+        continue; // tab/nhiều tab thì bỏ (đã thay bằng tab stop)
+      }
 
       if (m && m.index === 0) {
         // Cả run bắt đầu bằng nhãn: xác định nhãn + phần nội dung sau nhãn
@@ -589,15 +638,30 @@ function mergeChoicesIntoOneLine(
   const present = ["A", "B", "C", "D"].filter((l) => buckets.has(l));
   if (present.length < 2) return { merged: null, labels };
 
-  // Dựng paragraph 1 dòng, tab stop chia đều bề rộng khung
-  // 4 cột đều nhau: tab stop cho B/C/D tại step, 2·step, 3·step (A nằm ở lề trái,
-  // KHÔNG cần tab). Bỏ tab stop tại 0 vì Word bỏ qua tab trỏ về đúng vị trí hiện tại
-  // → cả 4 đáp án bị dồn thành nhiều dòng.
-  const step = Math.floor(boxW / present.length);
+  // SỐ ĐÁP ÁN MỖI DÒNG — chọn theo ĐỘ DÀI THẬT để không dồn/chồng chữ:
+  //  - 4/dòng: đáp án ngắn (số, biểu thức gọn) — như mẫu.
+  //  - 2/dòng: đáp án trung bình (công thức dài, câu chữ ngắn).
+  //  - 1/dòng: đáp án là CÂU VĂN dài (> 30 ký tự) — 2 cột sẽ chồng chữ
+  //    (lỗi trang 35: "Khôngcó6" mất dấu cách do cột quá hẹp).
+  const contentLen = present.map((l) =>
+    (buckets.get(l) || []).reduce((s, r) => s + runLogicalText(r).length, 0),
+  );
+  const maxLen = Math.max(0, ...contentLen);
+  const totalLen = contentLen.reduce((a, b) => a + b, 0);
+  // Bề rộng khả dụng mỗi cột (pt): boxW twips → pt rồi chia số cột
+  const colPt = boxW / 20 / present.length;
+  // 1 ký tự TNR 14 ≈ 7pt → số ký tự vừa 1 cột
+  const charsPerCol = colPt / 7;
+  let perLine: number;
+  if (maxLen > charsPerCol * 0.85) perLine = 1;             // câu văn dài → 1/dòng
+  else if (totalLen > charsPerCol * present.length * 0.7) perLine = 2; // công thức dài → 2/dòng
+  else perLine = present.length;                            // ngắn → 4/dòng như mẫu
+  // Tab stop: chỉ đặt trong phạm vi 1 DÒNG (perLine cột), mốc thứ 1..perLine-1.
+  const step = Math.floor(boxW / perLine);
   const p = el(doc, "p");
   const pPr = el(doc, "pPr");
   const tabs = el(doc, "tabs");
-  for (let i = 1; i < present.length; i++) {
+  for (let i = 1; i < perLine; i++) {
     tabs.appendChild(el(doc, "tab", { "w:val": "left", "w:pos": String(i * step) }));
   }
   pPr.appendChild(tabs);
@@ -606,11 +670,21 @@ function mergeChoicesIntoOneLine(
   pPr.appendChild(tnr(doc));
   p.appendChild(pPr);
 
+  // Dựng các dòng, mỗi dòng tối đa `perLine` đáp án. Tab CHỈ đặt trước đáp án thứ 2
+  // trở đi TRONG CÙNG DÒNG (tab stop đầu = 0 khiến Word bỏ qua tab → dồn dòng).
+  let row = [0]; // bắt đầu paragraph/hàng mới
   present.forEach((lab, i) => {
-    // Tab CHỈ đặt TRƯỚC đáp án thứ 2 trở đi. Đặt tab trước A sẽ đẩy A sang tab
-    // stop đầu tiên — nhưng nếu tab stop đầu = 0 thì Word BỎ QUA tab, cả dòng dồn
-    // thành nhiều dòng (bug: A/B/C/D rơi xuống 3 dòng khác nhau).
-    if (i > 0) {
+    const rowIdx = Math.floor(i / perLine);
+    const colIdx = i % perLine;
+    if (rowIdx > 0 && colIdx === 0) {
+      // sang dòng mới: thêm <w:br/> rồi reset
+      const rBr = el(doc, "r");
+      rBr.appendChild(tnr(doc));
+      rBr.appendChild(el(doc, "br"));
+      p.appendChild(rBr);
+      row = [rowIdx];
+    }
+    if (colIdx > 0) {
       const rTab = el(doc, "r");
       rTab.appendChild(tnr(doc));
       rTab.appendChild(el(doc, "tab"));
@@ -827,7 +901,14 @@ export function applyVodLayout(
       }
     }
     const hasPicture = picParas.length > 0;
-    const boxW = hasPicture ? BOX_W_WITH_IMG : BOX_W_HALF;
+    // TÌNH HUỐNG ĐẶC BIỆT: câu có BẢNG (bảng tần số/số liệu nhiều cột) không vừa
+    // khung 1/2 trang → nới khung rộng hơn cho bảng nằm gọn bên trong (yêu cầu user).
+    const hasWideTable = g.elems.some((e) => isW(e, "tbl") && tableColCount(e) >= 5);
+    const boxW = hasPicture
+      ? BOX_W_WITH_IMG
+      : hasWideTable
+        ? BOX_W_FULL
+        : BOX_W_HALF;
 
     // Câu đầu giữ nguyên trang 1; các câu sau bắt đầu trang mới (1 câu/trang).
     const boxP = makeVodQuestionBox(doc, !firstGroup, boxW);
@@ -857,6 +938,9 @@ export function applyVodLayout(
       }
       for (const e of g.elems) {
         if (skip.has(e) || picSet.has(e)) continue;
+        // Bảng ngữ liệu: ép vừa bề rộng khung trước khi đưa vào (nếu không sẽ tràn
+        // ra ngoài viền + chữ trong ô dồn 1 ký tự/dòng).
+        if (isW(e, "tbl")) shrinkTableToWidth(e, doc, boxW);
         e.parentNode?.removeChild(e as XNode);
         content.appendChild(e);
       }
@@ -894,7 +978,7 @@ export function applyVodLayout(
     // Cộng chiều cao BẢNG NGỮ LIỆU đứng ngay trước khung (bảng nằm ngoài khung
     // theo mẫu) — nếu bỏ qua, số dòng chấm tính thừa → tràn trang, sinh trang trắng
     // (bug gặp ở câu có bảng tần số).
-    const leadingTableH = tableHeightBefore(body, boxP);
+    const leadingTableH = 0; // bảng ngữ liệu nay nằm TRONG khung, không còn ngoài
     // Ước lượng chiều cao khung. Hệ số 1.35 là HỆ SỐ HIỆU CHỈNH đo được: ước lượng
     // theo ký tự thường THẤP hơn chiều cao thật (do công thức OLE, nhiều dòng đáp án),
     // nên nhân lên để không cấp thừa dòng chấm → tránh tràn trang.
@@ -905,14 +989,25 @@ export function applyVodLayout(
     // Khung hẹp (1/2 trang) làm chữ wrap gấp ~2 lần số dòng so với khung full-width,
     // nên hệ số chiều cao phải nhân theo tỉ lệ bề rộng khung.
     const widthFactor = TEXT_W / boxW; // 2.0 khi khung 1/2 trang, 1.8 khi có hình
-    const estH = g.elems.reduce(
-      (acc, e) => acc + estimateParaHeightTwips(e) * widthFactor, 0,
-    );
-    const boxH = estH * 0.6 + 900 + leadingTableH + 900; // +900 = 1 dòng an toàn
-    const availH = PAGE_BODY_H - boxH;
-    const nDots = dotsPerQuestion > 0
-      ? dotsPerQuestion
-      : Math.max(1, Math.min(DOTS_FULL_PAGE, Math.round(availH / DOTS_LINE_TWIPS)));
+    // Ước lượng chiều cao khung, hiệu chỉnh bằng SỐ LIỆU ĐO 50 trang thật:
+    // boxH_pt ≈ 24 × số_dòng + 20, với số_dòng = ceil(chars / 63) cho khung nửa trang.
+    // (Công thức cũ theo twips sai 20–50% → có trang chỉ được 1 dòng kẻ chấm.)
+    // estimateParaHeightTwips đã tính theo bề rộng khung nửa trang (63 ký tự/dòng).
+    // Khung có hình rộng hơn (6.5in) nên chữ/ dòng nhiều hơn → giảm hệ số tương ứng.
+    const estH = g.elems.reduce((acc, e) => acc + estimateParaHeightTwips(e), 0);
+    const boxH = estH * (hasPicture ? 0.92 : 1) + leadingTableH + 600;
+    // Chừa 1.2 dòng an toàn: sai số ước lượng ±1 dòng; nếu vượt, Word đẩy dòng
+    // chấm cuối sang trang mới → sinh trang trắng (đã dính nhiều lần).
+    // Đo trên 50 trang: ước lượng boxH vẫn CAO hơn thực tế ~160pt (8 dòng) → bù vào.
+    // Bù bằng hằng số đo được, không đoán: trung bình lệch 162pt ≈ 8 dòng chấm.
+    const availH = PAGE_BODY_H - boxH + 1400; // +1400 twips = bù 70pt lệch ước lượng (an toàn)
+    const qIndex = stats.questions; // 0-based theo thứ tự câu
+    const override = DOTS_OVERRIDE && DOTS_OVERRIDE[qIndex] != null ? DOTS_OVERRIDE[qIndex] : null;
+    const nDots = override != null
+      ? Math.max(0, override)
+      : dotsPerQuestion > 0
+        ? dotsPerQuestion
+        : Math.max(3, Math.min(DOTS_FULL_PAGE + 2, Math.floor(availH / DOTS_LINE_TWIPS)));
     let anchor: XNode = boxAnchor as XNode;
     for (let k = 0; k < nDots; k++) {
       const dots = makeVodDots(doc, DOTS_LINE_TWIPS);
@@ -942,6 +1037,18 @@ export function applyVodLayout(
     for (const p of ps) flattenListBullets(p, doc);
   }
   normalizeParagraphFont(body, doc);
+  // chèn space quanh công thức (tránh "Khôngtồntại") — phải làm SAU khi đã gom đáp án
+  {
+    const ps2: XElement[] = [];
+    const collect2 = (node: XNode): void => {
+      for (const c of childrenOf(node)) {
+        if (isW(c, "p")) ps2.push(c);
+        collect2(c);
+      }
+    };
+    collect2(body);
+    for (const p of ps2) ensureSpaceAroundMath(p, doc);
+  }
 
   // ---- 5) Page setup 32 × 18 cm, không header/footer
   const sectPr = childrenOf(body).find((c) => isW(c, "sectPr"));
@@ -992,7 +1099,9 @@ function estimateParaHeightTwips(p: XElement): number {
   // Công thức hiệu chỉnh từ PDF thật: mỗi dòng chữ (chứa cả công thức OLE) cao
   // ~18pt = 360 twips, ~65 ký tự/dòng ở TNR 14 khổ 30 cm; +1 dòng cho hàng đáp án;
   // +14pt (280 twips) cho inset/viền của shape.
-  const textH = Math.max(1, Math.ceil(chars / 105)) * 900;
+  // Số dòng thật trong khung nửa trang ≈ ceil(chars / 63) (đo trên 50 trang).
+  // Mỗi dòng ≈ 24pt = 480 twips; +20pt = 400 twips cho inset/viền.
+  const textH = Math.ceil(chars / 63) * 480 + 400;
 
   // chiều cao ảnh/đồ thị nhúng (drawing: wp:extent cy)
   let visualH = 0;
@@ -1266,6 +1375,58 @@ function makeTwoColumnLayout(
     host.insertBefore(tbl as XNode, hostNext as XNode | null);
   }
   return tbl;
+}
+
+/** Số cột của bảng (lấy hàng đầu) */
+function tableColCount(tbl: XElement): number {
+  for (const tr of childrenOf(tbl)) {
+    if (!isW(tr, "tr")) continue;
+    return childrenOf(tr).filter((c) => isW(c, "tc")).length;
+  }
+  return 0;
+}
+
+/**
+ * Ép bảng về vừa bề rộng khung (bảng ngữ liệu gốc rộng 882pt trong khung 426pt →
+ * tràn ra ngoài viền, chữ trong ô bị dồn thành 1 ký tự/dòng — đúng lỗi user báo
+ * "trang 6 bảng bị hỏng").
+ *  - tblW = 100% (pct) để bảng co theo ô chứa.
+ *  - tblLayout = autofit + tcW = 100% chia đều số cột.
+ */
+function shrinkTableToWidth(tbl: XElement, doc: XDocument, boxW: number): void {
+  const tblPr = childrenOf(tbl).find((c) => isW(c, "tblPr"));
+  if (tblPr) {
+    for (const c of childrenOf(tblPr)) {
+      if (isW(c, "tblW") || isW(c, "tblLayout") || isW(c, "tblInd")) {
+        tblPr.removeChild(c as XNode);
+      }
+    }
+    const w = el(doc, "tblW", { "w:w": "5000", "w:type": "pct" }); // 100% (pct = 1/50 %)
+    tblPr.appendChild(w);
+    tblPr.appendChild(el(doc, "tblLayout", { "w:type": "autofit" }));
+  }
+  // tblGrid: chia đều bề rộng khung
+  const nCols = tableColCount(tbl) || 1;
+  const colW = Math.floor((boxW - 200) / nCols);
+  const grid = childrenOf(tbl).find((c) => isW(c, "tblGrid"));
+  if (grid) {
+    for (const gc of childrenOf(grid)) {
+      if (isW(gc, "gridCol")) gc.setAttribute("w:w", String(colW));
+    }
+  }
+  // từng ô: tcW theo số cột
+  for (const tr of childrenOf(tbl)) {
+    if (!isW(tr, "tr")) continue;
+    for (const tc of childrenOf(tr)) {
+      if (!isW(tc, "tc")) continue;
+      const tcPr = childrenOf(tc).find((c) => isW(c, "tcPr"));
+      if (!tcPr) continue;
+      for (const c of childrenOf(tcPr)) {
+        if (isW(c, "tcW")) tcPr.removeChild(c as XNode);
+      }
+      tcPr.appendChild(el(doc, "tcW", { "w:w": String(colW), "w:type": "dxa" }));
+    }
+  }
 }
 
 function findTxbxContent(boxP: XElement): XElement | null {
