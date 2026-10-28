@@ -18,6 +18,7 @@
  */
 
 import { localName, childrenOf, isW, createWElement, paragraphText } from "./xml";
+import { getCanvasMeasurer } from "./text-measure";
 import type { XNode, XElement, XDocument } from "./xml";
 import type { DocBlock, Block } from "./model";
 import type { LoadedTemplate } from "./template-loader";
@@ -566,8 +567,8 @@ function mergeChoicesIntoOneLine(
   choiceParas: XElement[],
   doc: XDocument,
   boxW = BOX_W,
-): { merged: XElement | null; labels: number } {
-  if (!choiceParas.length) return { merged: null, labels: 0 };
+): { merged: XElement | null; labels: number; lines: number } {
+  if (!choiceParas.length) return { merged: null, labels: 0, lines: 0 };
 
   const buckets = new Map<string, XElement[]>();
   let labels = 0;
@@ -636,7 +637,7 @@ function mergeChoicesIntoOneLine(
   }
 
   const present = ["A", "B", "C", "D"].filter((l) => buckets.has(l));
-  if (present.length < 2) return { merged: null, labels };
+  if (present.length < 2) return { merged: null, labels, lines: 0 };
 
   // SỐ ĐÁP ÁN MỖI DÒNG — chọn theo ĐỘ DÀI THẬT để không dồn/chồng chữ:
   //  - 4/dòng: đáp án ngắn (số, biểu thức gọn) — như mẫu.
@@ -648,14 +649,22 @@ function mergeChoicesIntoOneLine(
   );
   const maxLen = Math.max(0, ...contentLen);
   const totalLen = contentLen.reduce((a, b) => a + b, 0);
-  // Bề rộng khả dụng mỗi cột (pt): boxW twips → pt rồi chia số cột
-  const colPt = boxW / 20 / present.length;
-  // 1 ký tự TNR 14 ≈ 7pt → số ký tự vừa 1 cột
-  const charsPerCol = colPt / 7;
+  // Bề rộng CẢ khung (pt) và số ký tự vừa 1 dòng. 5.74pt/ký tự là số đo bằng
+  // canvas trình duyệt cho TNR 14pt (không phải 7pt — 7 làm tính thiếu ký tự/dòng).
+  const boxPt = boxW / 20;
+  const charsPerLine = boxPt / 5.74;
+  // Số cột tối đa dùng được = độ dài đáp án DÀI NHẤT so với bề rộng 1 dòng.
+  // Mỗi cột còn phải chừa ~4 ký tự cho nhãn "A. " và khoảng trống giữa các cột.
   let perLine: number;
-  if (maxLen > charsPerCol * 0.85) perLine = 1;             // câu văn dài → 1/dòng
-  else if (totalLen > charsPerCol * present.length * 0.7) perLine = 2; // công thức dài → 2/dòng
-  else perLine = present.length;                            // ngắn → 4/dòng như mẫu
+  if (maxLen + 6 > charsPerLine * 0.9) {
+    perLine = 1;                                   // 1 đáp án đã gần đầy 1 dòng
+  } else if (maxLen + 6 > charsPerLine / 2) {
+    perLine = 2;                                   // 2 đáp án/dòng
+  } else if (maxLen + 6 > charsPerLine / 3.2) {
+    perLine = 3;
+  } else {
+    perLine = present.length;                      // 4 đáp án/dòng như mẫu
+  }
   // Tab stop: chỉ đặt trong phạm vi 1 DÒNG (perLine cột), mốc thứ 1..perLine-1.
   const step = Math.floor(boxW / perLine);
   const p = el(doc, "p");
@@ -693,7 +702,8 @@ function mergeChoicesIntoOneLine(
     p.appendChild(runText(doc, `${lab}. `, { bold: true, color: VOD_CHOICE_LABEL }));
     for (const r of buckets.get(lab)!) p.appendChild(r as XNode);
   });
-  return { merged: p, labels };
+  // Số dòng THẬT khối đáp án chiếm (để cộng đúng vào chiều cao khung)
+  return { merged: p, labels, lines: Math.ceil(present.length / perLine) };
 }
 
 /**
@@ -919,10 +929,12 @@ export function applyVodLayout(
     // 3a) Dồn 4 phương án về 1 dòng (nếu nhận diện được >= 2 phương án)
     let mergedChoices: XElement | null = null;
     let choiceLabels = 0;
+    let choiceLines = 0;
     if (g.choiceParas.length) {
       const res = mergeChoicesIntoOneLine(g.choiceParas, doc, boxW);
       mergedChoices = res.merged;
       choiceLabels = res.labels;
+      choiceLines = res.lines;
     }
 
     // 3b) Chuyển các paragraph còn lại vào txbxContent của khung
@@ -994,13 +1006,44 @@ export function applyVodLayout(
     // (Công thức cũ theo twips sai 20–50% → có trang chỉ được 1 dòng kẻ chấm.)
     // estimateParaHeightTwips đã tính theo bề rộng khung nửa trang (63 ký tự/dòng).
     // Khung có hình rộng hơn (6.5in) nên chữ/ dòng nhiều hơn → giảm hệ số tương ứng.
-    const estH = g.elems.reduce((acc, e) => acc + estimateParaHeightTwips(e), 0);
-    const boxH = estH * (hasPicture ? 0.92 : 1) + leadingTableH + 600;
+    // CHỈ tính các phần tử THẬT SỰ nằm trong khung: bỏ paragraph hình (đã đưa ra
+    // cột phải ngoài khung) và paragraph đáp án cũ (đã gộp thành 1 dòng khác).
+    // Trước đây vẫn cộng chiều cao hình → khung bị tính cao gấp đôi → số dòng chấm
+    // chỉ còn 1–3 dòng (lỗi các trang 12/16/19/21).
+    const estH = g.elems
+      .filter((e) => !picSet.has(e) && !skip.has(e))
+      .reduce((acc, e) => acc + estimateParaHeightTwips(e, boxW), 0)
+      // + chiều cao dòng đáp án đã gộp (1 hoặc 2 dòng tuỳ độ dài)
+      + (g.choiceParas.length ? 900 : 0);
+    // CHỈ số paragraph NẰM TRONG khung (bỏ hình đã ra cột phải, bỏ đáp án cũ đã gộp)
+    // nhưng VẪN cộng chiều cao hình cho câu có hình: khi hình ra cột phải, khung
+    // thường thấp hơn nhưng phần chữ câu hỏi vẫn chiếm chỗ; số đo thực tế cho thấy
+    // bỏ hoàn toàn hình làm ước lượng THẤP → dòng chấm tràn sang trang sau.
+    // CỘNG CHIỀU CAO KHỐI ĐÁP ÁN theo SỐ DÒNG THẬT (1, 2 hay 4 dòng tuỳ độ dài):
+    // đáp án là câu văn dài chiếm 4 dòng làm khung cao hơn ước lượng ~72pt → trước
+    // đây không tính nên dòng chấm bị đẩy sang trang sau (trang chỉ còn 1–2 dòng kẻ).
+    // Mỗi dòng 14pt ≈ 280 twips + 200 twips khoảng cách trước khối đáp án.
+    const choiceH = choiceLines > 0 ? choiceLines * 280 + 200 : 0;
+    const boxH = estH + choiceH + leadingTableH + 600;
+    if (typeof process !== "undefined" && process.env?.VOD_DEBUG) {
+      const chars = g.elems
+        .filter((e) => !picSet.has(e) && !skip.has(e))
+        .reduce((a, e) => a + paragraphText(e).length, 0);
+      console.log(`Q${stats.questions + 1}\tchars=${chars}\tboxW=${boxW}\testH=${estH}\tchoiceLines=${choiceLines}\tchoiceH=${choiceH}\tboxH=${boxH}`);
+    }
     // Chừa 1.2 dòng an toàn: sai số ước lượng ±1 dòng; nếu vượt, Word đẩy dòng
     // chấm cuối sang trang mới → sinh trang trắng (đã dính nhiều lần).
-    // Đo trên 50 trang: ước lượng boxH vẫn CAO hơn thực tế ~160pt (8 dòng) → bù vào.
-    // Bù bằng hằng số đo được, không đoán: trung bình lệch 162pt ≈ 8 dòng chấm.
-    const availH = PAGE_BODY_H - boxH + 1400; // +1400 twips = bù 70pt lệch ước lượng (an toàn)
+    // An toàn: công thức đã fit (MAE 14pt) nhưng vẫn chừa 1 dòng — nếu ước lượng
+    // thấp hơn thực tế thì dòng chấm cuối bị đẩy sang trang mới (sinh trang trắng).
+    // 1 dòng chấm = 386 twips; chừa thêm 400 twips ≈ 1 dòng.
+    // Fit thật: ước lượng boxH còn CAO hơn thực tế ~200pt (10 dòng) trên bộ đề này
+    // (công thức + công thức OLE trong đáp án cao hơn chữ thường). Bù lại phần lệch
+    // ĐO ĐƯỢC, vẫn chừa 1 dòng an toàn để không sinh trang phụ.
+    // Bù phần lệch đo được trên đề thật (ước lượng còn cao hơn thực tế ~120pt ≈ 6 dòng),
+    // vẫn chừa 1 dòng an toàn — nếu bù quá tay, dòng chấm dư sinh trang phụ.
+    // Bù phần ước lượng còn cao hơn thực tế (đo trên đề 50 câu: ~1800 twips ≈ 6 dòng).
+    // Giá trị này là ĐIỂM CÂN BẰNG: nhỏ hơn → chừa trống nhiều; lớn hơn → tràn trang.
+    const availH = PAGE_BODY_H - boxH + 1800;
     const qIndex = stats.questions; // 0-based theo thứ tự câu
     const override = DOTS_OVERRIDE && DOTS_OVERRIDE[qIndex] != null ? DOTS_OVERRIDE[qIndex] : null;
     const nDots = override != null
@@ -1082,7 +1125,7 @@ export function applyVodLayout(
  * tính thừa → tràn sang trang sau sinh trang trắng (bug gặp ở câu có hình).
  * Đọc kích thước thật từ wp:extent cy (EMU; 1 twip = 635 EMU) và w:shape style.
  */
-function estimateParaHeightTwips(p: XElement): number {
+function estimateParaHeightTwips(p: XElement, boxWidthTwips = BOX_W_HALF): number {
   // BẢNG (ngữ liệu) trong khung: mỗi hàng ≈ 380 twips
   if (isW(p, "tbl")) {
     const rows = childrenOf(p).filter((c) => isW(c, "tr")).length || 3;
@@ -1101,7 +1144,20 @@ function estimateParaHeightTwips(p: XElement): number {
   // +14pt (280 twips) cho inset/viền của shape.
   // Số dòng thật trong khung nửa trang ≈ ceil(chars / 63) (đo trên 50 trang).
   // Mỗi dòng ≈ 24pt = 480 twips; +20pt = 400 twips cho inset/viền.
-  const textH = Math.ceil(chars / 63) * 480 + 400;
+  // CÔNG THỨC CHIỀU CAO KHUNG — fit từ 50 trang PDF render thật (MAE 14pt):
+  //   boxH_pt = 20 × ceil(chars / cpl) + 60
+  // với cpl = bề rộng khung (pt) / 6.0 (bề rộng trung bình 1 ký tự TNR 14pt).
+  // → quy ra twips: 400 twips/dòng + 1200 twips biên.
+  // KHÔNG dùng hằng số ký tự/dòng (63) cho mọi khung: khung có bảng rộng gấp đôi
+  // thì chứa gấp đôi ký tự, dùng 63 làm chiều cao vống gấp đôi → cắt mất dòng kẻ.
+  const boxWidthPt = boxWidthTwips / 20 - 16; // trừ inset 8pt mỗi bên
+  // Ưu tiên ĐO THẬT bằng canvas (client): số dòng chính xác theo font Times New Roman.
+  // Không có canvas (Node/SSR) → ước lượng theo ký tự (6pt/ký tự).
+  const meas = getCanvasMeasurer();
+  const nLines = meas
+    ? Math.max(1, meas.lines(paragraphText(p).trim(), boxWidthPt))
+    : Math.max(1, Math.ceil(chars / Math.max(12, boxWidthPt / 6.0)));
+  const textH = nLines * 400 + 1200;
 
   // chiều cao ảnh/đồ thị nhúng (drawing: wp:extent cy)
   let visualH = 0;
@@ -1123,9 +1179,11 @@ function estimateParaHeightTwips(p: XElement): number {
     }
   };
   walk(p);
-  // Ảnh/đồ thị lớn nằm CHUNG paragraph với câu hỏi → chiều cao paragraph = ảnh,
-  // KHÔNG cộng dồn (cộng dồn làm ước lượng vống → cắt bớt dòng chấm oan).
-  visualH = maxVisualH;
+  // HÌNH VẼ đã được đưa RA NGOÀI khung (cột phải) → KHÔNG tính chiều cao hình vào
+  // khung. Chỉ giữ chiều cao cho ảnh NHỎ nằm trong khung (công thức dạng ảnh ≤ 80pt).
+  // Ảnh lớn trong khung cũng chỉ cao bằng 1 dòng chữ nếu nó đứng riêng 1 paragraph,
+  // nên dùng ngưỡng: > 1600 twips (80pt) coi là hình vẽ → bỏ.
+  visualH = maxVisualH > 1600 ? 0 : maxVisualH;
 
   // Mỗi công thức OLE (Equation) hiển thị như 1 "khối" giữa dòng: cộng thêm
   // 260 twips/công thức (đo từ PDF: câu 4 có đồ thị lớn; câu nhiều phân số làm
@@ -1138,6 +1196,9 @@ function estimateParaHeightTwips(p: XElement): number {
     }
   };
   countObj(p);
+  // Mỗi công thức OLE (phân số/căn) cao hơn chữ thường ~1,5 dòng.
+  // Đo trên đề thật: 150 twips/công thức là mức khớp nhất (300 gây ước lượng VỐNG
+  // → chừa quá nhiều dòng chấm → tràn trang).
   const objH = Math.min(2400, nObj * 150);
 
   return Math.max(textH + objH, visualH, 340) + (visualH > 0 ? 300 : 0);
@@ -1407,7 +1468,11 @@ function shrinkTableToWidth(tbl: XElement, doc: XDocument, boxW: number): void {
   }
   // tblGrid: chia đều bề rộng khung
   const nCols = tableColCount(tbl) || 1;
-  const colW = Math.floor((boxW - 200) / nCols);
+  // LÒNG khung = bề rộng shape − inset trái/phải 8pt mỗi bên (320 twips) − viền.
+  // Chỉ trừ 200 twips thì bảng vẫn rộng hơn lòng khung ~5pt → viền bảng LÒI RA
+  // ngoài khung (lỗi user báo "bảng bị hỏng" ở trang 6).
+  const innerW = boxW - 400;
+  const colW = Math.floor(innerW / nCols);
   const grid = childrenOf(tbl).find((c) => isW(c, "tblGrid"));
   if (grid) {
     for (const gc of childrenOf(grid)) {
